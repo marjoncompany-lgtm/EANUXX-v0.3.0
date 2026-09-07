@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -18,23 +19,37 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-ZIP="$(find . -maxdepth 1 -type f -name '*.zip' -print -quit)"
+
+          echo "Checking repository files..."
+          ls -lah
+
+          ZIP="$(find . -maxdepth 1 -type f -name '*.zip' -print -quit)"
 
           if [ -z "$ZIP" ]; then
-            echo "ERROR: UpdateSafe source ZIP not found."
+            echo "ERROR: No source ZIP file was found."
             exit 1
           fi
 
-          echo "Found source: $ZIP"
+          echo "Found source ZIP:"
+          echo "$ZIP"
 
           rm -rf source
+
+          mkdir -p source
+
           unzip -q "$ZIP" -d source
 
+          echo "Extracted files:"
+          find source -maxdepth 3 -type f | head -100
+
           if [ ! -f "source/EANUXX/settings.gradle.kts" ]; then
-            echo "ERROR: EANUXX Android project was not found."
-            find source -maxdepth 3 -type f | head -100
+            echo "ERROR: Android project was not found at source/EANUXX."
+            echo "Searching for settings.gradle.kts..."
+            find source -name settings.gradle.kts -print
             exit 1
           fi
+
+          echo "EANUXX Android project found successfully."
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -47,10 +62,51 @@ ZIP="$(find . -maxdepth 1 -type f -name '*.zip' -print -quit)"
         with:
           gradle-version: "8.9"
 
+      - name: Verify Android project
+        working-directory: source/EANUXX
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Project directory:"
+          pwd
+
+          echo "Project files:"
+          ls -lah
+
+          echo "Gradle files:"
+          find . -maxdepth 2 -type f \
+            -name "*.gradle" -o -name "*.gradle.kts" \
+            -print
+
       - name: Build release APK
         working-directory: source/EANUXX
+        shell: bash
         run: |
+          set -euo pipefail
+
+          echo "Building EANUXX release APK..."
+
           gradle --no-daemon clean assembleRelease
+
+          echo "Build output:"
+          find app/build/outputs -type f -print
+
+      - name: Check unsigned APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="source/EANUXX/app/build/outputs/apk/release/app-release-unsigned.apk"
+
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: Release APK was not created."
+            find source/EANUXX/app/build/outputs -type f -print
+            exit 1
+          fi
+
+          echo "Unsigned APK found:"
+          ls -lh "$APK"
 
       - name: Align APK
         shell: bash
@@ -58,16 +114,24 @@ ZIP="$(find . -maxdepth 1 -type f -name '*.zip' -print -quit)"
           set -euo pipefail
 
           ZIPALIGN="$(find "$ANDROID_HOME/build-tools" \
-            -name zipalign -type f | sort -V | tail -1)"
+            -name zipalign \
+            -type f \
+            | sort -V \
+            | tail -1)"
 
           if [ -z "$ZIPALIGN" ]; then
-            echo "ERROR: zipalign not found."
+            echo "ERROR: zipalign was not found."
             exit 1
           fi
+
+          echo "Using:"
+          echo "$ZIPALIGN"
 
           "$ZIPALIGN" -f -p 4 \
             source/EANUXX/app/build/outputs/apk/release/app-release-unsigned.apk \
             source/EANUXX/app/build/outputs/apk/release/EANUXX-aligned.apk
+
+          echo "APK alignment completed."
 
       - name: Restore EANUXX signing certificate
         env:
@@ -77,91 +141,4 @@ ZIP="$(find . -maxdepth 1 -type f -name '*.zip' -print -quit)"
         run: |
           set -euo pipefail
 
-          if [ -z "$KEYSTORE_B64" ]; then
-            echo "ERROR: EANUXX_KEYSTORE_BASE64 secret is missing."
-            exit 1
-          fi
-
-          if [ -z "$KEYSTORE_PASSWORD" ]; then
-            echo "ERROR: EANUXX_KEYSTORE_PASSWORD secret is missing."
-            exit 1
-          fi
-
-          printf '%s' "$KEYSTORE_B64" | base64 --decode > EANUXX-release.p12
-
-          echo "PASS=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
-
-      - name: Verify installed-app certificate
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          FINGERPRINT="$(
-            keytool -list -v \
-              -storetype PKCS12 \
-              -keystore EANUXX-release.p12 \
-              -storepass "$PASS" \
-              -alias eanuxx |
-              awk -F': ' '/SHA256:/{print $2; exit}'
-          )"
-
-          EXPECTED='95:3F:44:4B:65:59:4F:10:FC:C4:56:A7:F5:44:3F:DB:95:54:AF:46:F9:A5:FB:72:BF:24:92:91:C8:48:C7:E0'
-
-          echo "Signing certificate:"
-          echo "$FINGERPRINT"
-
-          if [ "$FINGERPRINT" != "$EXPECTED" ]; then
-            echo "ERROR: WRONG CERTIFICATE."
-            echo "The APK was NOT signed because it would not be update-compatible."
-            exit 1
-          fi
-
-          echo "Certificate matches the existing EANUXX certificate."
-
-      - name: Sign APK with V1 V2 V3
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APKSIGNER="$(
-            find "$ANDROID_HOME/build-tools" \
-              -name apksigner -type f | sort -V | tail -1
-          )"
-
-          "$APKSIGNER" sign \
-            --ks EANUXX-release.p12 \
-            --ks-type PKCS12 \
-            --ks-key-alias eanuxx \
-            --ks-pass env:PASS \
-            --v1-signing-enabled true \
-            --v2-signing-enabled true \
-            --v3-signing-enabled true \
-            --out source/EANUXX/app/build/outputs/apk/release/EANUXX-Livestreaming-Studio-v0.3.0-update.apk \
-            source/EANUXX/app/build/outputs/apk/release/EANUXX-aligned.apk
-
-          "$APKSIGNER" verify \
-            --verbose \
-            --print-certs \
-            source/EANUXX/app/build/outputs/apk/release/EANUXX-Livestreaming-Studio-v0.3.0-update.apk
-
-      - name: Verify package and version
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APK="source/EANUXX/app/build/outputs/apk/release/EANUXX-Livestreaming-Studio-v0.3.0-update.apk"
-
-          AAPT="$(
-            find "$ANDROID_HOME/build-tools" \
-              -name aapt -type f | sort -V | tail -1
-          )"
-
-          "$AAPT" dump badging "$APK" |
-            grep "package: name='com.wEANUXX_20148007' versionCode='3' versionName='0.3.0-functional-update'"
-
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: EANUXX-Livestreaming-Studio-v0.3.0-update
-          path: source/EANUXX/app/build/outputs/apk/release/EANUXX-Livestreaming-Studio-v0.3.0-update.apk
-          if-no-files-found: error
+          if [ -z "$KEYSTORE_B64" ];
