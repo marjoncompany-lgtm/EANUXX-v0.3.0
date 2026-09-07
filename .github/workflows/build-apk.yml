@@ -1,4 +1,4 @@
-name: EANUXX v0.4.0 Android 16 Build
+name: EANUXX v0.4.0 Android Build
 
 on:
   workflow_dispatch:
@@ -22,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -30,20 +31,24 @@ jobs:
         run: |
           set -euo pipefail
 
-          mapfile -t ZIPS < <(find . -maxdepth 1 -type f -name "*.zip" -print)
+          mapfile -t ZIPS < <(
+            find . -maxdepth 1 -type f -name "*.zip" -print
+          )
+
+          echo "ZIP files found: ${#ZIPS[@]}"
 
           if [ "${#ZIPS[@]}" -ne 1 ]; then
-            echo "ERROR: Repository root must contain exactly one source ZIP."
-            echo "Found:"
+            echo "ERROR: Exactly one ZIP must exist in the repository root."
             printf '%s\n' "${ZIPS[@]:-NONE}"
             exit 1
           fi
 
           SOURCE_ZIP="${ZIPS[0]}"
+
           echo "SOURCE_ZIP=${SOURCE_ZIP#./}" >> "$GITHUB_ENV"
 
-          echo "Using source:"
-          echo "${SOURCE_ZIP}"
+          echo "Using:"
+          echo "$SOURCE_ZIP"
 
       - name: Validate source ZIP
         shell: bash
@@ -52,65 +57,42 @@ jobs:
 
           unzip -t "$SOURCE_ZIP" >/dev/null
 
-          echo "Source ZIP is valid."
+          echo "ZIP validation successful."
 
-            - name: Extract source
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf app-source extracted-source
-          mkdir -p app-source extracted-source
-
-          unzip -q "$SOURCE_ZIP" -d extracted-source
-
-          SETTINGS_FILE="$(
-            find extracted-source -type f \
-              \( -name "settings.gradle.kts" -o -name "settings.gradle" \) \
-              -print -quit
-          )"
-
-          if [ -z "$SETTINGS_FILE" ]; then
-            echo "ERROR: settings.gradle(.kts) not found anywhere in the ZIP."
-            find extracted-source -maxdepth 5 -type f | sort | head -200
-            exit 1
-          fi
-
-          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
-
-          echo "Detected Gradle project:"
-          echo "$PROJECT_DIR"
-
-          cp -a "$PROJECT_DIR"/. app-source/
-
-          if [ ! -f app-source/settings.gradle.kts ] && \
-             [ ! -f app-source/settings.gradle ]; then
-            echo "ERROR: Failed to prepare Gradle project root."
-            find app-source -maxdepth 3 -type f | sort | head -100
-            exit 1
-          fi
-
-          echo "Gradle project prepared successfully."
-
-          echo "=== PROJECT ROOT ==="
-          find app-source -maxdepth 2 -type f | sort
+      - name: Extract source
         shell: bash
         run: |
           set -euo pipefail
 
           rm -rf app-source
+
           mkdir -p app-source
 
           unzip -q "$SOURCE_ZIP" -d app-source
 
-          if [ ! -f app-source/settings.gradle.kts ] && \
-             [ ! -f app-source/settings.gradle ]; then
-            echo "ERROR: settings.gradle(.kts) not found."
-            find app-source -maxdepth 3 -type f | sort | head -100
+          echo "Checking Gradle project..."
+
+          if [ ! -f "app-source/settings.gradle.kts" ] && \
+             [ ! -f "app-source/settings.gradle" ]; then
+
+            echo "ERROR: settings.gradle(.kts) was not found."
+
+            echo "ZIP contents:"
+            find app-source -maxdepth 4 -type f | sort
+
             exit 1
           fi
 
-          echo "Source extracted successfully."
+          if [ ! -d "app-source/app" ]; then
+            echo "ERROR: Android app directory was not found."
+            find app-source -maxdepth 3 -type d | sort
+            exit 1
+          fi
+
+          echo "Gradle project detected successfully."
+
+          echo "Project files:"
+          find app-source -maxdepth 2 -type f | sort
 
       - name: Setup Java 17
         uses: actions/setup-java@v5
@@ -123,7 +105,7 @@ jobs:
         with:
           gradle-version: "8.13"
 
-      - name: Check Gradle project
+      - name: Check Gradle
         shell: bash
         working-directory: app-source
         run: |
@@ -137,30 +119,47 @@ jobs:
         run: |
           set -euo pipefail
 
-          gradle --no-daemon clean assembleRelease
+          gradle \
+            --no-daemon \
+            --stacktrace \
+            clean \
+            assembleRelease
 
-      - name: Locate unsigned APK
+      - name: Find release APK
         shell: bash
         run: |
           set -euo pipefail
 
           mapfile -t APKS < <(
-            find app-source -type f \
-              \( -name "*-release-unsigned.apk" -o -name "*-release.apk" \) \
-              -print
+            find app-source -type f -name "*.apk" -print
           )
 
-          if [ "${#APKS[@]}" -lt 1 ]; then
-            echo "ERROR: Release APK was not found."
-            find app-source -type f -name "*.apk" -print
+          echo "APK files found: ${#APKS[@]}"
+
+          printf '%s\n' "${APKS[@]:-NONE}"
+
+          if [ "${#APKS[@]}" -eq 0 ]; then
+            echo "ERROR: No APK was produced."
             exit 1
           fi
 
-          INPUT_APK="${APKS[0]}"
+          INPUT_APK=""
+
+          for APK in "${APKS[@]}"; do
+            if [[ "$APK" == *"/release/"* ]] || \
+               [[ "$APK" == *"release-unsigned.apk" ]]; then
+              INPUT_APK="$APK"
+              break
+            fi
+          done
+
+          if [ -z "$INPUT_APK" ]; then
+            INPUT_APK="${APKS[0]}"
+          fi
 
           echo "INPUT_APK=$INPUT_APK" >> "$GITHUB_ENV"
 
-          echo "Found APK:"
+          echo "Selected APK:"
           echo "$INPUT_APK"
 
       - name: Locate Android build tools
@@ -171,24 +170,31 @@ jobs:
           BUILD_TOOLS_DIR=""
 
           for DIR in "$ANDROID_HOME"/build-tools/*; do
-            if [ -x "$DIR/zipalign" ] && [ -x "$DIR/apksigner" ]; then
+            if [ -x "$DIR/zipalign" ] && \
+               [ -x "$DIR/apksigner" ] && \
+               [ -x "$DIR/aapt" ]; then
               BUILD_TOOLS_DIR="$DIR"
             fi
           done
 
           if [ -z "$BUILD_TOOLS_DIR" ]; then
-            echo "ERROR: zipalign/apksigner were not found."
-            find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f \
-              \( -name "zipalign" -o -name "apksigner" \) -print
+            echo "ERROR: Android build tools not found."
+
+            find "$ANDROID_HOME/build-tools" \
+              -maxdepth 2 \
+              -type f \
+              \( -name "zipalign" -o -name "apksigner" -o -name "aapt" \) \
+              -print
+
             exit 1
           fi
 
           echo "BUILD_TOOLS_DIR=$BUILD_TOOLS_DIR" >> "$GITHUB_ENV"
 
-          echo "Using Android Build Tools:"
+          echo "Using Android build tools:"
           echo "$BUILD_TOOLS_DIR"
 
-      - name: Verify APK metadata
+      - name: Verify package metadata
         shell: bash
         run: |
           set -euo pipefail
@@ -198,15 +204,7 @@ jobs:
           "$BUILD_TOOLS_DIR/aapt" dump badging "$INPUT_APK" \
             | grep -E "package:|sdkVersion:|targetSdkVersion:" || true
 
-          echo
-          echo "Expected package:"
-          echo "com.wEANUXX_20148007"
-
-          echo "Expected version:"
-          echo "versionCode 5"
-          echo "versionName 0.4.0-professional-update"
-
-      - name: Align APK for 16 KB page compatibility
+      - name: Align APK for 16 KB compatibility
         shell: bash
         run: |
           set -euo pipefail
@@ -224,9 +222,9 @@ jobs:
 
           echo "ALIGNED_APK=$ALIGNED_APK" >> "$GITHUB_ENV"
 
-          echo "APK aligned."
+          echo "APK alignment completed."
 
-      - name: Verify APK alignment
+      - name: Verify 16 KB alignment
         shell: bash
         run: |
           set -euo pipefail
@@ -237,9 +235,9 @@ jobs:
             4 \
             "$ALIGNED_APK"
 
-          echo "16 KB-compatible ZIP alignment verified."
+          echo "16 KB alignment verified."
 
-      - name: Verify resources.arsc compression
+      - name: Verify resources.arsc
         shell: bash
         run: |
           set -euo pipefail
@@ -254,41 +252,40 @@ jobs:
               info = z.getinfo("resources.arsc")
 
               if info.compress_type != zipfile.ZIP_STORED:
-                  raise SystemExit(
-                      "ERROR: resources.arsc is compressed. "
-                      "It must be stored/uncompressed."
-                  )
+                  print("ERROR: resources.arsc is compressed.")
+                  sys.exit(1)
 
           print("resources.arsc is uncompressed.")
           PY
 
-      - name: Restore signing certificate
+      - name: Restore EANUXX signing certificate
         shell: bash
         env:
-          EANUXX_KEYSTORE_BASE64: ${{ secrets.EANUXX_KEYSTORE_BASE64 }}
+          KEYSTORE_BASE64: ${{ secrets.EANUXX_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
 
-          if [ -z "${EANUXX_KEYSTORE_BASE64:-}" ]; then
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
             echo "ERROR: EANUXX_KEYSTORE_BASE64 secret is missing."
             exit 1
           fi
 
-          printf '%s' "$EANUXX_KEYSTORE_BASE64" \
-            | base64 --decode > EANUXX-release.p12
+          printf '%s' "$KEYSTORE_BASE64" \
+            | base64 --decode \
+            > EANUXX-release.p12
 
           chmod 600 EANUXX-release.p12
 
           echo "Signing certificate restored."
 
-      - name: Verify signing certificate
+      - name: Verify EANUXX signing certificate
         shell: bash
         env:
-          EANUXX_KEYSTORE_PASSWORD: ${{ secrets.EANUXX_KEYSTORE_PASSWORD }}
+          KEYSTORE_PASSWORD: ${{ secrets.EANUXX_KEYSTORE_PASSWORD }}
         run: |
           set -euo pipefail
 
-          if [ -z "${EANUXX_KEYSTORE_PASSWORD:-}" ]; then
+          if [ -z "${KEYSTORE_PASSWORD:-}" ]; then
             echo "ERROR: EANUXX_KEYSTORE_PASSWORD secret is missing."
             exit 1
           fi
@@ -298,14 +295,8 @@ jobs:
             -v \
             -storetype PKCS12 \
             -keystore EANUXX-release.p12 \
-            -storepass "$EANUXX_KEYSTORE_PASSWORD" \
+            -storepass "$KEYSTORE_PASSWORD" \
             > certificate.txt
-
-          echo "=== SIGNING CERTIFICATE ==="
-
-          grep -E \
-            "Owner:|Issuer:|SHA256:|Alias name:" \
-            certificate.txt || true
 
           EXPECTED_CERT="953F444B65594F10FCC456A7F5443FDB9554AF46F9A5FB72BF249291C848C7E0"
 
@@ -317,43 +308,47 @@ jobs:
             | tr '[:lower:]' '[:upper:]'
           )"
 
+          echo "Expected certificate:"
+          echo "$EXPECTED_CERT"
+
+          echo "Actual certificate:"
+          echo "$ACTUAL_CERT"
+
           if [ "$ACTUAL_CERT" != "$EXPECTED_CERT" ]; then
-            echo "ERROR: Signing certificate does not match."
-            echo "Expected: $EXPECTED_CERT"
-            echo "Actual:   $ACTUAL_CERT"
+            echo "ERROR: Certificate does not match."
             exit 1
           fi
 
-          echo "Signing certificate matches EANUXX certificate."
+          echo "Correct EANUXX certificate confirmed."
 
       - name: Sign APK
         shell: bash
         env:
-          EANUXX_KEYSTORE_PASSWORD: ${{ secrets.EANUXX_KEYSTORE_PASSWORD }}
+          KEYSTORE_PASSWORD: ${{ secrets.EANUXX_KEYSTORE_PASSWORD }}
         run: |
           set -euo pipefail
 
-          SIGNED_APK="output/EANUXX-v0.4.0-update.apk"
+          FINAL_APK="output/EANUXX-v0.4.0-update.apk"
 
           "$BUILD_TOOLS_DIR/apksigner" sign \
             --ks EANUXX-release.p12 \
             --ks-type PKCS12 \
             --ks-key-alias eanuxx \
-            --ks-pass "pass:$EANUXX_KEYSTORE_PASSWORD" \
+            --ks-pass "pass:$KEYSTORE_PASSWORD" \
             --v1-signing-enabled true \
             --v2-signing-enabled true \
             --v3-signing-enabled true \
-            --out "$SIGNED_APK" \
+            --out "$FINAL_APK" \
             "$ALIGNED_APK"
 
-          echo "SIGNED_APK=$SIGNED_APK" >> "$GITHUB_ENV"
+          echo "FINAL_APK=$FINAL_APK" >> "$GITHUB_ENV"
 
-          echo "APK signed with EANUXX certificate."
+          echo "APK signing completed."
 
-      - name: Verify final APK
+      - name: Verify final APK signature
         shell: bash
         run: |
-          set -u
+          set +e
 
           echo "=== APK SIGNATURE VERIFICATION ==="
 
@@ -361,41 +356,37 @@ jobs:
             "$BUILD_TOOLS_DIR/apksigner" verify \
               --verbose \
               --print-certs \
-              "$SIGNED_APK" 2>&1
+              "$FINAL_APK" 2>&1
           )"
 
-          VERIFY_STATUS=$?
+          STATUS=$?
 
           printf '%s\n' "$VERIFY_OUTPUT"
 
-          if [ "$VERIFY_STATUS" -ne 0 ]; then
+          if [ "$STATUS" -ne 0 ]; then
             echo "ERROR: APK signature verification failed."
-            exit "$VERIFY_STATUS"
+            exit "$STATUS"
           fi
 
-          echo
-          echo "=== EXTRACT CERTIFICATE ==="
+          EXPECTED_CERT="953F444B65594F10FCC456A7F5443FDB9554AF46F9A5FB72BF249291C848C7E0"
 
           APK_CERT="$(
             printf '%s\n' "$VERIFY_OUTPUT" \
-            | grep -oE \
-              'SHA-256 digest: [0-9A-Fa-f:]+' \
+            | grep -oE 'SHA-256 digest: [0-9A-Fa-f:]+' \
             | head -1 \
             | sed 's/.*: //' \
             | tr -d ':' \
             | tr '[:lower:]' '[:upper:]'
           )"
 
-          EXPECTED_CERT="953F444B65594F10FCC456A7F5443FDB9554AF46F9A5FB72BF249291C848C7E0"
-
-          echo "Expected:"
+          echo "Expected certificate:"
           echo "$EXPECTED_CERT"
 
-          echo "APK:"
+          echo "APK certificate:"
           echo "$APK_CERT"
 
           if [ -z "$APK_CERT" ]; then
-            echo "ERROR: Could not extract APK certificate."
+            echo "ERROR: Could not read APK certificate."
             exit 1
           fi
 
@@ -404,8 +395,7 @@ jobs:
             exit 1
           fi
 
-          echo
-          echo "APK certificate matches."
+          echo "APK signature and certificate verified."
 
       - name: Verify final APK alignment
         shell: bash
@@ -416,16 +406,16 @@ jobs:
             -c \
             -P 16 \
             4 \
-            "$SIGNED_APK"
+            "$FINAL_APK"
 
           echo "Final APK alignment verified."
 
-      - name: Verify APK ZIP integrity
+      - name: Verify APK integrity
         shell: bash
         run: |
           set -euo pipefail
 
-          unzip -t "$SIGNED_APK" >/dev/null
+          unzip -t "$FINAL_APK" >/dev/null
 
           echo "APK ZIP integrity verified."
 
@@ -435,7 +425,7 @@ jobs:
           set -euo pipefail
 
           BADGING="$(
-            "$BUILD_TOOLS_DIR/aapt" dump badging "$SIGNED_APK"
+            "$BUILD_TOOLS_DIR/aapt" dump badging "$FINAL_APK"
           )"
 
           printf '%s\n' "$BADGING"
@@ -450,30 +440,6 @@ jobs:
             | grep -q "versionName='0.4.0-professional-update'"
 
           echo "Package and version verified."
-
-      - name: Check native libraries
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf native-check
-          mkdir -p native-check
-
-          unzip -q "$SIGNED_APK" "lib/*" -d native-check || true
-
-          SO_COUNT="$(
-            find native-check -type f -name "*.so" | wc -l
-          )"
-
-          echo "Native libraries found: $SO_COUNT"
-
-          if [ "$SO_COUNT" -eq 0 ]; then
-            echo "No native libraries found."
-            exit 0
-          fi
-
-          echo "Native libraries are present."
-          echo "ZIP alignment has already been verified for 16 KB compatibility."
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
