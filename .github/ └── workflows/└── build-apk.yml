@@ -1,0 +1,202 @@
+name: EANUXX v0.4.0 Android 17 Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-apk.yml"
+      - "*.zip"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eanuxx-android17-build
+  cancel-in-progress: true
+
+env:
+  PACKAGE_NAME: "com.wEANUXX_20148007"
+  VERSION_CODE: "5"
+  VERSION_NAME: "0.4.0-professional-update"
+  EXPECTED_CERT_SHA256: "953F444B65594F10FCC456A7F5443FDB9554AF46F9A5FB72BF249291C848C7E0"
+  EXPECTED_SOURCE_SHA256: "20045f871722c4f86ea3a83fee8a86d872041fd6646791cbadaffd60d02225b9"
+  ANDROID_PLATFORM: "android-37.0"
+  ANDROID_BUILD_TOOLS: "36.0.0"
+  GRADLE_VERSION: "9.6.1"
+
+jobs:
+  build:
+    name: Build EANUXX v0.4.0 APK
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Locate exactly one source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t zips < <(find . -maxdepth 1 -type f -name '*.zip' -print | sort)
+          if [ "${#zips[@]}" -ne 1 ]; then echo "ERROR: Exactly one source ZIP must exist in the repository root." printf '%s\n' "${zips[@]:-NONE}" exit 1 fi echo "SOURCE_ZIP=${zips[0]}" >> "$GITHUB_ENV" echo "Using source ZIP: ${zips[0]}" - name: Verify source ZIP integrity and identity shell: bash run: | set -euo pipefail unzip -t "$SOURCE_ZIP" >/dev/null actual="$(sha256sum "$SOURCE_ZIP" | awk '{print $1}')" echo "Source SHA-256: $actual" echo "Expected SHA-256: $EXPECTED_SOURCE_SHA256" test "$actual" = "$EXPECTED_SOURCE_SHA256" - name: Extract source shell: bash run: | set -euo pipefail rm -rf app-source mkdir -p app-source unzip -q "$SOURCE_ZIP" -d app-source settings_file="$(find app-source -type f \( -name 'settings.gradle.kts' -o -name 'settings.gradle' \) -print -quit)" if [ -z "$settings_file" ]; then echo "ERROR: settings.gradle(.kts) not found in source ZIP." exit 1 fi project_dir="$(dirname "$settings_file")" echo "PROJECT_DIR=$project_dir" >> "$GITHUB_ENV" test -d "$project_dir/app" echo "Gradle project: $project_dir" - name: Verify source project is AGP 9 built-in Kotlin compatible working-directory: ${{ env.PROJECT_DIR }} shell: bash run: | set -euo pipefail grep -q 'com.android.application.*9.4.0' build.gradle.kts grep -q 'org.jetbrains.kotlin.plugin.compose.*2.3.21' build.gradle.kts ! grep -Eq '^[[:space:]]*id\(["'"']org\.jetbrains\.kotlin\.android["'"']\)' build.gradle.kts app/build.gradle.kts
+          grep -q 'compileSdk = 37' app/build.gradle.kts
+          grep -q 'targetSdk = 37' app/build.gradle.kts
+          grep -q 'buildConfig = true' app/build.gradle.kts
+          grep -q 'versionCode = 5' app/build.gradle.kts
+          grep -q 'versionName = "0.4.0-professional-update"' app/build.gradle.kts
+          grep -q 'requireLensFacing(lensFacing)' app/src/main/java/com/eanuxx/livestream/ui/screens/StudioScreen.kt
+          ! grep -q 'setLensFacing(lensFacing)' app/src/main/java/com/eanuxx/livestream/ui/screens/StudioScreen.kt
+
+          echo "Gradle and CameraX source checks passed."
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Gradle 9.6.1
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.6.1"
+          cache-provider: basic
+
+      - name: Verify Java and Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          gradle --version
+
+      - name: Ensure Android 17 SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          test -n "$sdkmanager"
+          test -x "$sdkmanager"
+          platform_dir="$ANDROID_HOME/platforms/$ANDROID_PLATFORM"
+          build_tools_dir="$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS"
+          yes | "$sdkmanager" --licenses >/dev/null || true
+          if [ ! -d "$platform_dir" ]; then
+            "$sdkmanager" "platforms;$ANDROID_PLATFORM"
+          fi
+          if [ ! -d "$build_tools_dir" ]; then
+            "$sdkmanager" "build-tools;$ANDROID_BUILD_TOOLS"
+          fi
+          test -d "$platform_dir"
+          test -x "$build_tools_dir/zipalign"
+          test -x "$build_tools_dir/apksigner"
+          test -x "$build_tools_dir/aapt"
+          echo "BUILD_TOOLS_DIR=$build_tools_dir" >> "$GITHUB_ENV"
+          echo "Android API 37.0 and Build Tools 36.0.0 are ready."
+
+      - name: Validate Gradle project configuration
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle tasks --no-daemon --stacktrace --warning-mode all
+
+      - name: Build release APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle :app:assembleRelease --no-daemon --stacktrace --warning-mode all
+
+      - name: Select exactly one release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t apks < <(find "$PROJECT_DIR/app/build/outputs/apk/release" -type f -name '*.apk' -print | sort)
+          if [ "${#apks[@]}" -ne 1 ]; then echo "ERROR: Expected exactly one release APK; found ${#apks[@]}" printf '%s\n' "${apks[@]:-NONE}" exit 1 fi cp "${apks[0]}" unsigned.apk echo "UNSIGNED_APK=$GITHUB_WORKSPACE/unsigned.apk" >> "$GITHUB_ENV" - name: Verify unsigned APK metadata shell: bash run: | set -euo pipefail "$BUILD_TOOLS_DIR/aapt" dump badging "$UNSIGNED_APK" > unsigned.badging grep -q "package: name='$PACKAGE_NAME'" unsigned.badging grep -q "versionCode='$VERSION_CODE'" unsigned.badging grep -q "versionName='$VERSION_NAME'" unsigned.badging grep -q "targetSdkVersion:'37'" unsigned.badging cat unsigned.badging - name: Align APK for 16 KB page compatibility shell: bash run: | set -euo pipefail mkdir -p output "$BUILD_TOOLS_DIR/zipalign" -f -P 16 4 "$UNSIGNED_APK" output/EANUXX-v0.4.0-aligned.apk echo "ALIGNED_APK=$GITHUB_WORKSPACE/output/EANUXX-v0.4.0-aligned.apk" >> "$GITHUB_ENV" - name: Verify pre-signing alignment shell: bash run: | set -euo pipefail "$BUILD_TOOLS_DIR/zipalign" -c -P 16 4 "$ALIGNED_APK" - name: Verify resources.arsc is uncompressed shell: bash run: | set -euo pipefail python3 - "$ALIGNED_APK" <<'PY' import sys import zipfile with zipfile.ZipFile(sys.argv[1]) as z: info = z.getinfo("resources.arsc") if info.compress_type != zipfile.ZIP_STORED: raise SystemExit("ERROR: resources.arsc is compressed") print("resources.arsc: uncompressed") PY - name: Restore signing keystore shell: bash env: KEYSTORE_BASE64: ${{ secrets.EANUXX_KEYSTORE_BASE64 }} run: | set -euo pipefail test -n "${KEYSTORE_BASE64:-}"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > EANUXX-release.p12
+          chmod 600 EANUXX-release.p12
+          test -s EANUXX-release.p12
+
+      - name: Verify signing certificate
+        shell: bash
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.EANUXX_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "${KEYSTORE_PASSWORD:-}"
+          keytool -list -v -storetype PKCS12 -keystore EANUXX-release.p12 -storepass "$KEYSTORE_PASSWORD" > certificate.txt
+          actual="$(python3 - <<'PY' import re text = open('certificate.txt', encoding='utf-8', errors='replace').read() m = re.search(r'SHA256:\s*([0-9A-Fa-f:]{95})', text) if not m: raise SystemExit('ERROR: SHA-256 certificate fingerprint not found') print(m.group(1).replace(':', '').upper()) PY )"
+          echo "Expected: $EXPECTED_CERT_SHA256"
+          echo "Actual: $actual"
+          test "$actual" = "$EXPECTED_CERT_SHA256"
+
+      - name: Sign APK with existing EANUXX certificate
+        shell: bash
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.EANUXX_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          "$BUILD_TOOLS_DIR/apksigner" sign \
+            --ks EANUXX-release.p12 \
+            --ks-type PKCS12 \
+            --ks-key-alias eanuxx \
+            --ks-pass "pass:$KEYSTORE_PASSWORD" \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --v4-signing-enabled false \
+            --out output/EANUXX-v0.4.0-update.apk \
+            "$ALIGNED_APK"
+          echo "FINAL_APK=$GITHUB_WORKSPACE/output/EANUXX-v0.4.0-update.apk" >> "$GITHUB_ENV"
+
+      - name: Verify final APK signature and certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$BUILD_TOOLS_DIR/apksigner" verify --verbose --print-certs "$FINAL_APK" 2>&1 | tee signature.txt
+          grep -q 'Verified using v1 scheme (JAR signing): true' signature.txt
+          grep -q 'Verified using v2 scheme (APK Signature Scheme v2): true' signature.txt
+          grep -q 'Verified using v3 scheme (APK Signature Scheme v3): true' signature.txt
+          actual="$(python3 - <<'PY' import re text = open('signature.txt', encoding='utf-8', errors='replace').read() m = re.search(r'certificate SHA-256 digest:\s*([0-9A-Fa-f:]{95})', text, re.I) if not m: raise SystemExit('ERROR: APK SHA-256 certificate digest not found') print(m.group(1).replace(':', '').upper()) PY )"
+          echo "Expected: $EXPECTED_CERT_SHA256"
+          echo "APK: $actual"
+          test "$actual" = "$EXPECTED_CERT_SHA256"
+
+      - name: Verify final alignment, ZIP integrity, and APK metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$BUILD_TOOLS_DIR/zipalign" -c -P 16 4 "$FINAL_APK"
+          unzip -t "$FINAL_APK" >/dev/null
+          "$BUILD_TOOLS_DIR/aapt" dump badging "$FINAL_APK" > final.badging
+          grep -q "package: name='$PACKAGE_NAME'" final.badging
+          grep -q "versionCode='$VERSION_CODE'" final.badging
+          grep -q "versionName='$VERSION_NAME'" final.badging
+          grep -q "targetSdkVersion:'37'" final.badging
+          echo "Final APK checks passed."
+          cat final.badging
+
+      - name: Generate final APK checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum "$FINAL_APK" | tee output/EANUXX-v0.4.0-update.sha256
+          ls -lh "$FINAL_APK"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EANUXX-v0.4.0-Android17-Update
+          path: |
+            output/EANUXX-v0.4.0-update.apk
+            output/EANUXX-v0.4.0-update.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup signing material
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          rm -f -- EANUXX-release.p12 certificate.txt signature.txt unsigned.apk unsigned.badging final.badging
+          echo "Signing material removed."
