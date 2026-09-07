@@ -43,7 +43,50 @@ jobs:
           echo "Source ZIP:"
           ls -lh "$SOURCE_ZIP"
 
-      - name: Extract source
+            - name: Extract source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf build-source
+          mkdir -p build-source
+
+          echo "Extracting source ZIP..."
+          unzip -q "$SOURCE_ZIP" -d build-source
+
+          echo "Looking for Gradle project..."
+
+          PROJECT_DIR="$(
+            find build-source \
+              -type f \
+              -name settings.gradle.kts \
+              -print \
+              -quit
+          )"
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: settings.gradle.kts was not found."
+            echo "Extracted files:"
+            find build-source -maxdepth 5 -type f -print
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$PROJECT_DIR")"
+
+          if [ ! -f "$PROJECT_DIR/build.gradle.kts" ]; then
+            echo "ERROR: build.gradle.kts was not found."
+            exit 1
+          fi
+
+          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "ERROR: app/build.gradle.kts was not found."
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "Android project found:"
+          echo "$PROJECT_DIR"
         shell: bash
         run: |
           set -euo pipefail
