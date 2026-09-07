@@ -38,6 +38,244 @@ jobs:
 
           rm -rf source
           mkdir source
+
+          unzip -q "$SOURCE_ZIP" -d source
+
+          test -f source/EANUXX/settings.gradle.kts
+          test -f source/EANUXX/build.gradle.kts
+          test -f source/EANUXX/app/build.gradle.kts
+
+          echo "Source project found and validated."
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Check Gradle project
+        working-directory: source/EANUXX
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f settings.gradle.kts
+          test -f build.gradle.kts
+          test -f app/build.gradle.kts
+
+          gradle --no-daemon tasks --all
+
+      - name: Build release APK
+        working-directory: source/EANUXX
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gradle --no-daemon clean assembleRelease
+
+          test -f app/build/outputs/apk/release/app-release-unsigned.apk
+
+          ls -lh app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - name: Align APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INPUT="source/EANUXX/app/build/outputs/apk/release/app-release-unsigned.apk"
+          OUTPUT="source/EANUXX/app/build/outputs/apk/release/EANUXX-aligned.apk"
+
+          ZIPALIGN="$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -1)"
+
+          test -n "$ZIPALIGN"
+
+          "$ZIPALIGN" -f -p 4 "$INPUT" "$OUTPUT"
+
+          "$ZIPALIGN" -c -P 4 -v 4 "$OUTPUT"
+
+      - name: Verify resources.arsc
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import zipfile
+
+          apk = "source/EANUXX/app/build/outputs/apk/release/EANUXX-aligned.apk"
+
+          with zipfile.ZipFile(apk, "r") as z:
+              info = z.getinfo("resources.arsc")
+
+              if info.compress_type != zipfile.ZIP_STORED:
+                  raise SystemExit(
+                      "ERROR: resources.arsc is compressed."
+                  )
+
+          print("resources.arsc is uncompressed.")
+          print("zipalign already verified APK alignment successfully.")
+          PY
+
+      - name: Restore signing certificate
+        env:
+          KEYSTORE_B64: ${{ secrets.EANUXX_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -n "${KEYSTORE_B64:-}"
+
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > EANUXX-release.p12
+
+          chmod 600 EANUXX-release.p12
+
+          test -s EANUXX-release.p12
+
+          echo "Signing certificate restored."
+
+      - name: Verify signing certificate
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.EANUXX_KEYSTORE_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -n "${KEYSTORE_PASSWORD:-}"
+
+          FINGERPRINT="$(
+            keytool -list -v \
+              -storetype PKCS12 \
+              -keystore EANUXX-release.p12 \
+              -storepass "$KEYSTORE_PASSWORD" \
+              -alias eanuxx \
+            | awk -F': ' '/SHA256:/{print $2; exit}'
+          )"
+
+          EXPECTED="95:3F:44:4B:65:59:4F:10:FC:C4:56:A7:F5:44:3F:DB:95:54:AF:46:F9:A5:FB:72:BF:24:92:91:C8:48:C7:E0"
+
+          echo "Certificate fingerprint:"
+          echo "$FINGERPRINT"
+
+          if [ "$FINGERPRINT" != "$EXPECTED" ]; then
+            echo "ERROR: Certificate does not match the installed EANUXX certificate."
+            exit 1
+          fi
+
+          echo "Correct EANUXX certificate confirmed."
+
+      - name: Sign APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.EANUXX_KEYSTORE_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+
+          test -n "$APKSIGNER"
+
+          INPUT="source/EANUXX/app/build/outputs/apk/release/EANUXX-aligned.apk"
+
+          OUTPUT="source/EANUXX/app/build/outputs/apk/release/EANUXX-Livestreaming-Studio-v0.3.0-update.apk"
+
+          "$APKSIGNER" sign \
+            --ks EANUXX-release.p12 \
+            --ks-type PKCS12 \
+            --ks-key-alias eanuxx \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out "$OUTPUT" \
+            "$INPUT"
+
+          test -s "$OUTPUT"
+
+          ls -lh "$OUTPUT"
+
+      - name: Verify final APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="source/EANUXX/app/build/outputs/apk/release/EANUXX-Livestreaming-Studio-v0.3.0-update.apk"
+
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
+
+          test -n "$APKSIGNER"
+          test -n "$AAPT"
+          test -s "$APK"
+
+          echo "========== APK SIGNATURE =========="
+
+          "$APKSIGNER" verify \
+            --verbose \
+            --print-certs \
+            "$APK"
+
+          echo "========== APK PACKAGE =========="
+
+          BADGING="$("$AAPT" dump badging "$APK")"
+
+          echo "$BADGING"
+
+          echo "$BADGING" | grep -F \
+            "package: name='com.wEANUXX_20148007' versionCode='3' versionName='0.3.0-functional-update'"
+
+          echo "========== CERTIFICATE CHECK =========="
+
+          EXPECTED="95:3F:44:4B:65:59:4F:10:FC:C4:56:A7:F5:44:3F:DB:95:54:AF:46:F9:A5:FB:72:BF:24:92:91:C8:48:C7:E0"
+
+          "$APKSIGNER" verify \
+            --print-certs \
+            "$APK" | grep -F "$EXPECTED"
+
+          echo "Correct certificate confirmed."
+
+          echo "========== ZIP INTEGRITY =========="
+
+          python3 - <<'PY'
+          import zipfile
+
+          apk = "source/EANUXX/app/build/outputs/apk/release/EANUXX-Livestreaming-Studio-v0.3.0-update.apk"
+
+          with zipfile.ZipFile(apk, "r") as z:
+              bad = z.testzip()
+
+              if bad:
+                  raise SystemExit(
+                      f"ERROR: Corrupt APK entry: {bad}"
+                  )
+
+          print("APK ZIP integrity verified.")
+          PY
+
+          echo "========================================"
+          echo "EANUXX UPDATE APK VERIFIED SUCCESSFULLY"
+          echo "========================================"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: EANUXX-Livestreaming-Studio-v0.3.0-update
+          path: source/EANUXX/app/build/outputs/apk/release/EANUXX-Livestreaming-Studio-v0.3.0-update.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove signing material
+        if: always()
+        shell: bash
+        run: |
+          rm -f EANUXX-release.p12          set -euo pipefail
+
+          rm -rf source
+          mkdir source
           unzip -q "$SOURCE_ZIP" -d source
 
           test -f source/EANUXX/settings.gradle.kts
