@@ -1,4 +1,4 @@
-name: EANUXX APK Release
+name: Build EANUXX update APK
 
 on:
   workflow_dispatch:
@@ -9,32 +9,150 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: eanuxx-build-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build:
-    name: Build EANUXX update APK
+    name: Build and verify EANUXX APK
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+
+    env:
+      PACKAGE_NAME: com.wEANUXX_20148007
+      VERSION_CODE: "3"
+      VERSION_NAME: 0.3.0-functional-update
+      KEYSTORE_FILE: EANUXX-release.p12
+      KEY_ALIAS: eanuxx
+      KEYSTORE_PASSWORD: EANUXX2026
+      EXPECTED_SHA256: 953F444B65594F10FCC456A7F5443FDB9554AF46F9A5FB72BF249291C848C7E0
 
     steps:
 
-      # ==========================================================
+      # ------------------------------------------------------------
       # 1. CHECKOUT
-      # ==========================================================
-
+      # ------------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
-      # ==========================================================
+      # ------------------------------------------------------------
       # 2. LOCATE SOURCE ZIP
-      # ==========================================================
-
+      # ------------------------------------------------------------
       - name: Locate source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Searching for EANUXX source ZIP..."
+
+          ZIP_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -name '*.zip' | head -n 1)"
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No source ZIP found in repository root."
+            exit 1
+          fi
+
+          echo "Found:"
+          echo "$ZIP_FILE"
+
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------------
+      # 3. EXTRACT SOURCE
+      # ------------------------------------------------------------
+      - name: Extract source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$GITHUB_WORKSPACE/build-source"
+          mkdir -p "$GITHUB_WORKSPACE/build-source"
+
+          unzip -q "$ZIP_FILE" -d "$GITHUB_WORKSPACE/build-source"
+
+          echo "Extracted source."
+
+          find "$GITHUB_WORKSPACE/build-source" \
+            -maxdepth 5 \
+            -type f \
+            -name 'settings.gradle' -o -name 'settings.gradle.kts' \
+            -print
+
+      # ------------------------------------------------------------
+      # 4. FIND ACTUAL GRADLE PROJECT
+      # ------------------------------------------------------------
+      - name: Locate Gradle project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROJECT_DIR=""
+
+          SETTINGS_FILE="$(find "$GITHUB_WORKSPACE/build-source" \
+            -type f \
+            -name 'settings.gradle' -o -name 'settings.gradle.kts' \
+            | head -n 1)"
+
+          if [ -n "$SETTINGS_FILE" ]; then
+            PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: Gradle project was not found."
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "Gradle project:"
+          echo "$PROJECT_DIR"
+
+          echo "Project contents:"
+          ls -la "$PROJECT_DIR"
+
+      # ------------------------------------------------------------
+      # 5. JAVA 17
+      # ------------------------------------------------------------
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # ------------------------------------------------------------
+      # 6. GRADLE 8.9
+      # ------------------------------------------------------------
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      # ------------------------------------------------------------
+      # 7. CHECK GRADLE PROJECT
+      # ------------------------------------------------------------
+      - name: Check Gradle project
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+
+          echo "Gradle version:"
+          gradle --version
+
+          echo
+          echo "Gradle files:"
+          find . -maxdepth 3 -type f \
+            -name '*.gradle' -o -name '*.gradle.kts' \
+            -print
+
+      # ------------------------------------------------------------
+      # 8. BUILD RELEASE APK
+      # ------------------------------------------------------------
+      - name: Build release APK
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+
+          echo "Building release APK..."
+
+          gradle assembleRelease --no-daemon --stack      - name: Locate source ZIP
         shell: bash
         run: |
           set -euo pipefail
