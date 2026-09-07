@@ -11,384 +11,220 @@ permissions:
 
 jobs:
   build:
-    name: Build and verify EANUXX APK
+    name: Build, sign and verify EANUXX APK
     runs-on: ubuntu-latest
 
     env:
       PACKAGE_NAME: com.wEANUXX_20148007
-      VERSION_CODE: "3"
-      VERSION_NAME: 0.3.0-functional-update
-      KEYSTORE_FILE: EANUXX-release.p12
+      VERSION_CODE: "4"
+      VERSION_NAME: 0.3.1-functional-update
       KEY_ALIAS: eanuxx
-      KEYSTORE_PASSWORD: EANUXX2026
       EXPECTED_SHA256: 953F444B65594F10FCC456A7F5443FDB9554AF46F9A5FB72BF249291C848C7E0
 
     steps:
 
-      # ------------------------------------------------------------
-      # 1. CHECKOUT
-      # ------------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # 2. LOCATE SOURCE ZIP
-      # ------------------------------------------------------------
       - name: Locate source ZIP
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Searching for EANUXX source ZIP..."
+          SOURCE_ZIP="$(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -name '*.zip' -print -quit)"
 
-          ZIP_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -name '*.zip' | head -n 1)"
-
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No source ZIP found in repository root."
+          if [ -z "$SOURCE_ZIP" ]; then
+            echo "ERROR: No source ZIP found."
             exit 1
           fi
 
-          echo "Found:"
-          echo "$ZIP_FILE"
+          echo "SOURCE_ZIP=$SOURCE_ZIP" >> "$GITHUB_ENV"
 
-          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+          echo "Source ZIP:"
+          ls -lh "$SOURCE_ZIP"
 
-      # ------------------------------------------------------------
-      # 3. EXTRACT SOURCE
-      # ------------------------------------------------------------
       - name: Extract source
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf "$GITHUB_WORKSPACE/build-source"
-          mkdir -p "$GITHUB_WORKSPACE/build-source"
+          rm -rf build-source
+          mkdir -p build-source
 
-          unzip -q "$ZIP_FILE" -d "$GITHUB_WORKSPACE/build-source"
+          unzip -q "$SOURCE_ZIP" -d build-source
 
-          echo "Extracted source."
+          SETTINGS_FILE="$(find build-source -type f -name 'settings.gradle' -o -name 'settings.gradle.kts' -print -quit)"
 
-          find "$GITHUB_WORKSPACE/build-source" \
-            -maxdepth 5 \
-            -type f \
-            -name 'settings.gradle' -o -name 'settings.gradle.kts' \
-            -print
-
-      # ------------------------------------------------------------
-      # 4. FIND ACTUAL GRADLE PROJECT
-      # ------------------------------------------------------------
-      - name: Locate Gradle project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          PROJECT_DIR=""
-
-          SETTINGS_FILE="$(find "$GITHUB_WORKSPACE/build-source" \
-            -type f \
-            -name 'settings.gradle' -o -name 'settings.gradle.kts' \
-            | head -n 1)"
-
-          if [ -n "$SETTINGS_FILE" ]; then
-            PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
-          fi
-
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: Gradle project was not found."
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ERROR: Gradle settings file not found."
+            find build-source -maxdepth 5 -type f | sort
             exit 1
           fi
+
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
           echo "Gradle project:"
           echo "$PROJECT_DIR"
 
-          echo "Project contents:"
-          ls -la "$PROJECT_DIR"
-
-      # ------------------------------------------------------------
-      # 5. JAVA 17
-      # ------------------------------------------------------------
       - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
 
-      # ------------------------------------------------------------
-      # 6. GRADLE 8.9
-      # ------------------------------------------------------------
       - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
 
-      # ------------------------------------------------------------
-      # 7. CHECK GRADLE PROJECT
-      # ------------------------------------------------------------
-      - name: Check Gradle project
+      - name: Update APK version
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
 
-          echo "Gradle version:"
-          gradle --version
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
 
-          echo
-          echo "Gradle files:"
-          find . -maxdepth 3 -type f \
-            -name '*.gradle' -o -name '*.gradle.kts' \
-            -print
+          candidates = [
+              Path("app/build.gradle"),
+              Path("app/build.gradle.kts")
+          ]
 
-      # ------------------------------------------------------------
-      # 8. BUILD RELEASE APK
-      # ------------------------------------------------------------
+          gradle_file = next((p for p in candidates if p.exists()), None)
+
+          if gradle_file is None:
+              raise SystemExit("ERROR: app/build.gradle(.kts) not found.")
+
+          text = gradle_file.read_text()
+
+          original = text
+
+          text = re.sub(
+              r'(versionCode\s*[=:]\s*)\d+',
+              r'\g<1>4',
+              text,
+              count=1
+          )
+
+          text = re.sub(
+              r'(versionName\s*[=:]\s*)["\'][^"\']*["\']',
+              r'\g<1>"0.3.1-functional-update"',
+              text,
+              count=1
+          )
+
+          if text == original:
+              raise SystemExit(
+                  "ERROR: Could not update versionCode/versionName."
+              )
+
+          gradle_file.write_text(text)
+
+          print("Updated:")
+          print(gradle_file)
+          print("versionCode = 4")
+          print("versionName = 0.3.1-functional-update")
+          PY
+
       - name: Build release APK
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
 
-          echo "Building release APK..."
-
-          gradle assembleRelease --no-daemon --stack      - name: Locate source ZIP
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SOURCE_ZIP="EANUXX_Livestreaming_Studio_v0.3.0_FIXED_SOURCE.zip"
-
-          if [ ! -f "$SOURCE_ZIP" ]; then
-            echo "ERROR: Source ZIP not found."
-            echo "Expected: $SOURCE_ZIP"
-            echo ""
-            echo "Files in repository:"
-            find . -maxdepth 2 -type f | sort
-            exit 1
-          fi
-
-          if [ ! -s "$SOURCE_ZIP" ]; then
-            echo "ERROR: Source ZIP is empty."
-            exit 1
-          fi
-
-          echo "SOURCE_ZIP=$SOURCE_ZIP" >> "$GITHUB_ENV"
-
-          echo "Source ZIP found:"
-          ls -lh "$SOURCE_ZIP"
-
-      # ==========================================================
-      # 3. EXTRACT SOURCE
-      # ==========================================================
-
-      - name: Extract source
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf -- source
-          mkdir -p -- source
-
-          unzip -q "$SOURCE_ZIP" -d source
-
-          PROJECT_DIR="source/EANUXX"
-
-          if [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
-            echo "ERROR: settings.gradle.kts not found."
-            find source -maxdepth 4 -type f | sort
-            exit 1
-          fi
-
-          if [ ! -f "$PROJECT_DIR/build.gradle.kts" ]; then
-            echo "ERROR: build.gradle.kts not found."
-            exit 1
-          fi
-
-          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            echo "ERROR: app/build.gradle.kts not found."
-            exit 1
-          fi
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
-          echo "Android project found:"
-          echo "$PROJECT_DIR"
-
-      # ==========================================================
-      # 4. JAVA 17
-      # ==========================================================
-
-      - name: Set up Java 17
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: gradle
-
-      # ==========================================================
-      # 5. GRADLE 8.9
-      # ==========================================================
-
-      - name: Set up Gradle 8.9
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
-
-      # ==========================================================
-      # 6. CHECK GRADLE PROJECT
-      # ==========================================================
-
-      - name: Check Gradle project
-        shell: bash
-        working-directory: source/EANUXX
-        run: |
-          set -euo pipefail
-
-          gradle --no-daemon tasks --all
-
-          echo "Gradle project check passed."
-
-      # ==========================================================
-      # 7. BUILD RELEASE APK
-      # ==========================================================
-
-      - name: Build release APK
-        shell: bash
-        working-directory: source/EANUXX
-        run: |
-          set -euo pipefail
-
-          gradle \
-            --no-daemon \
-            clean \
-            assembleRelease
+          gradle clean assembleRelease --no-daemon --stacktrace
 
           APK="app/build/outputs/apk/release/app-release-unsigned.apk"
 
           if [ ! -f "$APK" ]; then
-            echo "ERROR: Unsigned release APK was not created."
+            APK="$(find app/build/outputs/apk/release \
+              -maxdepth 1 \
+              -type f \
+              -name '*.apk' \
+              -print -quit)"
+          fi
+
+          if [ -z "$APK" ] || [ ! -s "$APK" ]; then
+            echo "ERROR: Release APK was not produced."
+
+            find app/build/outputs \
+              -type f \
+              2>/dev/null \
+              | sort || true
+
             exit 1
           fi
 
-          if [ ! -s "$APK" ]; then
-            echo "ERROR: Unsigned APK is empty."
-            exit 1
-          fi
+          cp "$APK" "$GITHUB_WORKSPACE/EANUXX-unsigned.apk"
 
-          cp "$APK" "$GITHUB_WORKSPACE/EANUXX-release-unsigned.apk"
-
-          echo "Unsigned APK successfully created."
-
-          ls -lh "$GITHUB_WORKSPACE/EANUXX-release-unsigned.apk"
-
-      # ==========================================================
-      # 8. LOCATE ANDROID BUILD TOOLS
-      # ==========================================================
+          echo "Unsigned APK created:"
+          ls -lh "$GITHUB_WORKSPACE/EANUXX-unsigned.apk"
 
       - name: Locate Android build tools
         shell: bash
         run: |
           set -euo pipefail
 
-          if [ -z "${ANDROID_HOME:-}" ]; then
-            echo "ERROR: ANDROID_HOME is not set."
-            exit 1
-          fi
-
-          if [ ! -d "$ANDROID_HOME/build-tools" ]; then
-            echo "ERROR: Android Build Tools directory not found."
-            exit 1
-          fi
-
-          BUILD_TOOLS_VERSION="$(
+          BUILD_TOOLS_DIR="$(
             find "$ANDROID_HOME/build-tools" \
               -mindepth 1 \
               -maxdepth 1 \
               -type d \
-              -printf '%f\n' |
-              sort -V |
-              tail -n 1
+              -print |
+            sort -V |
+            tail -n 1
           )"
 
-          if [ -z "$BUILD_TOOLS_VERSION" ]; then
-            echo "ERROR: No Android Build Tools installation found."
+          if [ -z "$BUILD_TOOLS_DIR" ]; then
+            echo "ERROR: Android Build Tools not found."
             exit 1
           fi
 
-          BUILD_TOOLS="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION"
+          for TOOL in zipalign apksigner aapt2; do
+            if [ ! -x "$BUILD_TOOLS_DIR/$TOOL" ]; then
+              echo "ERROR: $TOOL not found."
+              exit 1
+            fi
+          done
 
-          if [ ! -x "$BUILD_TOOLS/zipalign" ]; then
-            echo "ERROR: zipalign not found."
-            exit 1
-          fi
+          echo "BUILD_TOOLS_DIR=$BUILD_TOOLS_DIR" >> "$GITHUB_ENV"
 
-          if [ ! -x "$BUILD_TOOLS/apksigner" ]; then
-            echo "ERROR: apksigner not found."
-            exit 1
-          fi
+          echo "Android Build Tools:"
+          echo "$BUILD_TOOLS_DIR"
 
-          if [ ! -x "$BUILD_TOOLS/aapt" ]; then
-            echo "ERROR: aapt not found."
-            exit 1
-          fi
-
-          echo "BUILD_TOOLS=$BUILD_TOOLS" >> "$GITHUB_ENV"
-
-          echo "Android Build Tools version:"
-          echo "$BUILD_TOOLS_VERSION"
-
-      # ==========================================================
-      # 9. VERIFY UNSIGNED ZIP
-      # ==========================================================
-
-      - name: Verify unsigned APK integrity
+      - name: Verify unsigned APK
         shell: bash
         run: |
           set -euo pipefail
 
-          unzip -t EANUXX-release-unsigned.apk >/dev/null
+          unzip -t EANUXX-unsigned.apk >/dev/null
 
-          echo "Unsigned APK ZIP integrity verified."
-
-      # ==========================================================
-      # 10. ALIGN APK
-      # ==========================================================
+          echo "Unsigned APK ZIP integrity OK."
 
       - name: Align APK
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -f -- EANUXX-release-aligned.apk
-
-          echo "Aligning APK..."
-
-          "$BUILD_TOOLS/zipalign" \
+          "$BUILD_TOOLS_DIR/zipalign" \
             -f \
-            -P 16 \
+            -p \
             4 \
-            EANUXX-release-unsigned.apk \
-            EANUXX-release-aligned.apk
+            EANUXX-unsigned.apk \
+            EANUXX-aligned.apk
 
-          if [ ! -s "EANUXX-release-aligned.apk" ]; then
-            echo "ERROR: Aligned APK was not created."
-            exit 1
-          fi
-
-          echo "Checking APK alignment..."
-
-          "$BUILD_TOOLS/zipalign" \
+          "$BUILD_TOOLS_DIR/zipalign" \
             -c \
-            -P 16 \
+            -p \
             4 \
-            EANUXX-release-aligned.apk
+            EANUXX-aligned.apk
 
           echo "APK alignment verified."
-
-      # ==========================================================
-      # 11. VERIFY resources.arsc
-      # ==========================================================
 
       - name: Verify resources.arsc
         shell: bash
@@ -396,80 +232,63 @@ jobs:
           set -euo pipefail
 
           python3 - <<'PY'
-          import sys
           import zipfile
 
-          apk = "EANUXX-release-aligned.apk"
+          apk = "EANUXX-aligned.apk"
 
-          try:
-              with zipfile.ZipFile(apk, "r") as z:
-                  info = z.getinfo("resources.arsc")
+          with zipfile.ZipFile(apk, "r") as z:
+              info = z.getinfo("resources.arsc")
 
-                  if info.compress_type != zipfile.ZIP_STORED:
-                      raise RuntimeError(
-                          "resources.arsc is compressed"
-                      )
-
-                  print(
-                      "resources.arsc is present "
-                      "and uncompressed."
+              if info.compress_type != zipfile.ZIP_STORED:
+                  raise SystemExit(
+                      "ERROR: resources.arsc is compressed."
                   )
 
-          except Exception as exc:
-              print(f"ERROR: {exc}")
-              sys.exit(1)
+          print("resources.arsc is present and uncompressed.")
           PY
 
-      # ==========================================================
-      # 12. VERIFY PACKAGE / VERSION
-      # ==========================================================
-
-      - name: Verify unsigned package metadata
+      - name: Verify package and version
         shell: bash
         run: |
           set -euo pipefail
 
           BADGING="$(
-            "$BUILD_TOOLS/aapt" \
+            "$BUILD_TOOLS_DIR/aapt2" \
               dump badging \
-              EANUXX-release-aligned.apk
+              EANUXX-aligned.apk
           )"
 
           echo "$BADGING"
 
           if ! grep -Fq \
-            "package: name='com.wEANUXX_20148007'" \
+            "package: name='$PACKAGE_NAME'" \
             <<< "$BADGING"
           then
-            echo "ERROR: Package name does not match."
+            echo "ERROR: Package name mismatch."
             exit 1
           fi
 
           if ! grep -Fq \
-            "versionCode='3'" \
+            "versionCode='4'" \
             <<< "$BADGING"
           then
-            echo "ERROR: versionCode does not match 3."
+            echo "ERROR: versionCode is not 4."
             exit 1
           fi
 
           if ! grep -Fq \
-            "versionName='0.3.0-functional-update'" \
+            "versionName='0.3.1-functional-update'" \
             <<< "$BADGING"
           then
-            echo "ERROR: versionName does not match."
+            echo "ERROR: versionName mismatch."
             exit 1
           fi
 
-          echo "Package name verified."
-          echo "Version code verified."
+          echo "Package verified."
+          echo "Version code 4 verified."
           echo "Version name verified."
 
-      # ==========================================================
-      # 13. RESTORE EXISTING EANUXX KEYSTORE
-      # ==========================================================
-
-      - name: Restore signing certificate
+      - name: Restore EANUXX signing certificate
         shell: bash
         env:
           KEYSTORE_BASE64: ${{ secrets.EANUXX_KEYSTORE_BASE64 }}
@@ -486,18 +305,14 @@ jobs:
 
           chmod 600 EANUXX-release.p12
 
-          if [ ! -s "EANUXX-release.p12" ]; then
-            echo "ERROR: Keystore restoration failed."
+          if [ ! -s EANUXX-release.p12 ]; then
+            echo "ERROR: Keystore is empty."
             exit 1
           fi
 
           echo "EANUXX signing certificate restored."
 
-      # ==========================================================
-      # 14. VERIFY KEYSTORE CERTIFICATE
-      # ==========================================================
-
-      - name: Verify signing certificate
+      - name: Verify EANUXX certificate
         shell: bash
         env:
           KEYSTORE_PASSWORD: ${{ secrets.EANUXX_KEYSTORE_PASSWORD }}
@@ -509,41 +324,53 @@ jobs:
             exit 1
           fi
 
-          EXPECTED_CERT="953F444B65594F10FCC456A7F5443FDB9554AF46F9A5FB72BF249291C848C7E0"
-
           keytool \
-            -exportcert \
-            -noprompt \
+            -list \
+            -v \
             -storetype PKCS12 \
             -keystore EANUXX-release.p12 \
             -storepass "$KEYSTORE_PASSWORD" \
-            -alias eanuxx \
-            -rfc > EANUXX-cert.pem
+            -alias "$KEY_ALIAS" > certificate.txt
 
           ACTUAL_CERT="$(
-            openssl x509 \
-              -in EANUXX-cert.pem \
-              -outform DER |
-            sha256sum |
-            awk '{print toupper($1)}'
+            python3 - <<'PY'
+          import re
+
+          text = open(
+              "certificate.txt",
+              encoding="utf-8"
+          ).read()
+
+          match = re.search(
+              r'SHA256:\s*([0-9A-Fa-f:]+)',
+              text
+          )
+
+          if not match:
+              raise SystemExit(
+                  "ERROR: SHA256 certificate fingerprint not found."
+              )
+
+          print(
+              match.group(1)
+              .replace(":", "")
+              .upper()
+          )
+          PY
           )"
 
           echo "Expected certificate:"
-          echo "$EXPECTED_CERT"
+          echo "$EXPECTED_SHA256"
 
           echo "Keystore certificate:"
           echo "$ACTUAL_CERT"
 
-          if [ "$ACTUAL_CERT" != "$EXPECTED_CERT" ]; then
-            echo "ERROR: Signing certificate does not match EANUXX certificate."
+          if [ "$ACTUAL_CERT" != "$EXPECTED_SHA256" ]; then
+            echo "ERROR: Wrong signing certificate."
             exit 1
           fi
 
           echo "Correct EANUXX certificate confirmed."
-
-      # ==========================================================
-      # 15. SIGN APK
-      # ==========================================================
 
       - name: Sign APK
         shell: bash
@@ -552,300 +379,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "${KEYSTORE_PASSWORD:-}" ]; then
-            echo "ERROR: Keystore password is missing."
-            exit 1
-          fi
-
-          rm -f -- EANUXX-release.apk
-
-          "$BUILD_TOOLS/apksigner" sign \
+          "$BUILD_TOOLS_DIR/apksigner" sign \
             --ks EANUXX-release.p12 \
             --ks-type PKCS12 \
-            --ks-key-alias eanuxx \
+            --ks-key-alias "$KEY_ALIAS" \
             --ks-pass "pass:$KEYSTORE_PASSWORD" \
             --v1-signing-enabled true \
             --v2-signing-enabled true \
-            --v3-signing-enabled true \
-            --out EANUXX-release.apk \
-            EANUXX-release-aligned.apk
-
-          if [ ! -s "EANUXX-release.apk" ]; then
-            echo "ERROR: Signed APK was not created."
-            exit 1
-          fi
-
-          echo "APK signed successfully."
-
-          ls -lh EANUXX-release.apk
-
-      # ==========================================================
-      # 16. VERIFY FINAL APK
-      # ==========================================================
-
-      - name: Verify final APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APK="EANUXX-release.apk"
-
-          EXPECTED_CERT="953F444B65594F10FCC456A7F5443FDB9554AF46F9A5FB72BF249291C848C7E0"
-
-          echo "=========================================="
-          echo "FINAL APK VERIFICATION"
-          echo "=========================================="
-
-          # ------------------------------------------------------
-          # APK SIGNATURE VERIFICATION
-          # ------------------------------------------------------
-
-          set +e
-
-          VERIFY_OUTPUT="$(
-            "$BUILD_TOOLS/apksigner" \
-              verify \
-              --verbose \
-              --print-certs \
-              "$APK" \
-              2>&1
-          )"
-
-          VERIFY_STATUS=$?
-
-          set -e
-
-          echo "$VERIFY_OUTPUT"
-
-          if [ "$VERIFY_STATUS" -ne 0 ]; then
-            echo "ERROR: apksigner verification failed."
-            exit 1
-          fi
-
-          echo "APK signature verification passed."
-
-          # ------------------------------------------------------
-          # V1
-          # ------------------------------------------------------
-
-          if ! grep -Fq \
-            "Verified using v1 scheme (JAR signing): true" \
-            <<< "$VERIFY_OUTPUT"
-          then
-            echo "ERROR: V1 signature verification failed."
-            exit 1
-          fi
-
-          echo "V1 signature verified."
-
-          # ------------------------------------------------------
-          # V2
-          # ------------------------------------------------------
-
-          if ! grep -Fq \
-            "Verified using v2 scheme (APK Signature Scheme v2): true" \
-            <<< "$VERIFY_OUTPUT"
-          then
-            echo "ERROR: V2 signature verification failed."
-            exit 1
-          fi
-
-          echo "V2 signature verified."
-
-          # ------------------------------------------------------
-          # V3
-          # ------------------------------------------------------
-
-          if ! grep -Fq \
-            "Verified using v3 scheme (APK Signature Scheme v3): true" \
-            <<< "$VERIFY_OUTPUT"
-          then
-            echo "ERROR: V3 signature verification failed."
-            exit 1
-          fi
-
-          echo "V3 signature verified."
-
-          # ------------------------------------------------------
-          # CERTIFICATE
-          # ------------------------------------------------------
-
-          echo "=========================================="
-          echo "CERTIFICATE VERIFICATION"
-          echo "=========================================="
-
-          APK_CERT="$(
-            printf '%s\n' "$VERIFY_OUTPUT" |
-            python3 -c '
-          import sys
-          import re
-
-          text = sys.stdin.read()
-
-          match = re.search(
-              r"certificate SHA-256 digest:\s*([0-9A-Fa-f:]+)",
-              text,
-              re.IGNORECASE
-          )
-
-          if not match:
-              print(
-                  "ERROR: Certificate digest not found.",
-                  file=sys.stderr
-              )
-              sys.exit(1)
-
-          print(
-              match.group(1)
-              .replace(":", "")
-              .upper()
-          )
-          '
-          )"
-
-          echo "Expected:"
-          echo "$EXPECTED_CERT"
-
-          echo "APK:"
-          echo "$APK_CERT"
-
-          if [ "$APK_CERT" != "$EXPECTED_CERT" ]; then
-            echo "ERROR: APK certificate does not match."
-            exit 1
-          fi
-
-          echo "APK certificate verified."
-
-          # ------------------------------------------------------
-          # PACKAGE AND VERSION
-          # ------------------------------------------------------
-
-          echo "=========================================="
-          echo "PACKAGE VERIFICATION"
-          echo "=========================================="
-
-          BADGING="$(
-            "$BUILD_TOOLS/aapt" \
-              dump badging \
-              "$APK"
-          )"
-
-          echo "$BADGING"
-
-          if ! grep -Fq \
-            "package: name='com.wEANUXX_20148007'" \
-            <<< "$BADGING"
-          then
-            echo "ERROR: Package name is incorrect."
-            exit 1
-          fi
-
-          if ! grep -Fq \
-            "versionCode='3'" \
-            <<< "$BADGING"
-          then
-            echo "ERROR: versionCode is incorrect."
-            exit 1
-          fi
-
-          if ! grep -Fq \
-            "versionName='0.3.0-functional-update'" \
-            <<< "$BADGING"
-          then
-            echo "ERROR: versionName is incorrect."
-            exit 1
-          fi
-
-          echo "Package verified."
-          echo "Version verified."
-
-          # ------------------------------------------------------
-          # ZIP INTEGRITY
-          # ------------------------------------------------------
-
-          echo "=========================================="
-          echo "ZIP INTEGRITY"
-          echo "=========================================="
-
-          unzip -t "$APK" >/dev/null
-
-          echo "APK ZIP integrity verified."
-
-          # ------------------------------------------------------
-          # resources.arsc
-          # ------------------------------------------------------
-
-          python3 - <<'PY'
-          import sys
-          import zipfile
-
-          apk = "EANUXX-release.apk"
-
-          try:
-              with zipfile.ZipFile(apk, "r") as z:
-                  info = z.getinfo("resources.arsc")
-
-                  if info.compress_type != zipfile.ZIP_STORED:
-                      raise RuntimeError(
-                          "resources.arsc is compressed"
-                      )
-
-                  print(
-                      "Final resources.arsc check passed."
-                  )
-
-          except Exception as exc:
-              print(f"ERROR: {exc}")
-              sys.exit(1)
-          PY
-
-          # ------------------------------------------------------
-          # FINAL SUCCESS
-          # ------------------------------------------------------
-
-          echo ""
-          echo "=========================================="
-          echo "EANUXX APK VERIFIED SUCCESSFULLY"
-          echo "=========================================="
-          echo "Package: com.wEANUXX_20148007"
-          echo "Version Code: 3"
-          echo "Version Name: 0.3.0-functional-update"
-          echo "V1: VERIFIED"
-          echo "V2: VERIFIED"
-          echo "V3: VERIFIED"
-          echo "Certificate: VERIFIED"
-          echo "ZIP: VERIFIED"
-          echo "resources.arsc: VERIFIED"
-          echo "=========================================="
-
-      # ==========================================================
-      # 17. UPLOAD APK
-      # ==========================================================
-
-      - name: Upload APK
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: EANUXX-v0.3.0-update-APK
-          path: EANUXX-release.apk
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
-
-      # ==========================================================
-      # 18. CLEANUP
-      # ==========================================================
-
-      - name: Remove signing material
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -f -- \
-            EANUXX-release.p12 \
-            EANUXX-cert.pem \
-            EANUXX-release-unsigned.apk \
-            EANUXX-release-aligned.apk
-
-          echo "Temporary signing material removed."
+            --v3
