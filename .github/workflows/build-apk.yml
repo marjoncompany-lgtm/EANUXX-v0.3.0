@@ -18,8 +18,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          ZIP="$(find . -maxdepth 1 -type f -name '*UpdateSafe_Source.zip' -print -quit)"
+ZIP="$(find . -maxdepth 1 -type f -name '*.zip' -print -quit)"
 
           if [ -z "$ZIP" ]; then
             echo "ERROR: UpdateSafe source ZIP not found."
