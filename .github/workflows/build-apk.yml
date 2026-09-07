@@ -54,7 +54,46 @@ jobs:
 
           echo "Source ZIP is valid."
 
-      - name: Extract source
+            - name: Extract source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf app-source extracted-source
+          mkdir -p app-source extracted-source
+
+          unzip -q "$SOURCE_ZIP" -d extracted-source
+
+          SETTINGS_FILE="$(
+            find extracted-source -type f \
+              \( -name "settings.gradle.kts" -o -name "settings.gradle" \) \
+              -print -quit
+          )"
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ERROR: settings.gradle(.kts) not found anywhere in the ZIP."
+            find extracted-source -maxdepth 5 -type f | sort | head -200
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+
+          echo "Detected Gradle project:"
+          echo "$PROJECT_DIR"
+
+          cp -a "$PROJECT_DIR"/. app-source/
+
+          if [ ! -f app-source/settings.gradle.kts ] && \
+             [ ! -f app-source/settings.gradle ]; then
+            echo "ERROR: Failed to prepare Gradle project root."
+            find app-source -maxdepth 3 -type f | sort | head -100
+            exit 1
+          fi
+
+          echo "Gradle project prepared successfully."
+
+          echo "=== PROJECT ROOT ==="
+          find app-source -maxdepth 2 -type f | sort
         shell: bash
         run: |
           set -euo pipefail
