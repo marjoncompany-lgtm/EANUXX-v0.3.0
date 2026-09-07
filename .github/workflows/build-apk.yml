@@ -13,15 +13,15 @@ jobs:
 
     steps:
 
-      # ---------------------------------------------------------
-      # 1. CHECKOUT
-      # ---------------------------------------------------------
+      # ==========================================
+      # CHECKOUT
+      # ==========================================
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------------------------------------------------------
-      # 2. FIND SOURCE ZIP
-      # ---------------------------------------------------------
+      # ==========================================
+      # LOCATE SOURCE ZIP
+      # ==========================================
       - name: Locate source ZIP
         shell: bash
         run: |
@@ -35,11 +35,13 @@ jobs:
           fi
 
           echo "SOURCE_ZIP=$ZIP" >> "$GITHUB_ENV"
-          echo "Found source ZIP: $ZIP"
 
-      # ---------------------------------------------------------
-      # 3. EXTRACT SOURCE
-      # ---------------------------------------------------------
+          echo "Source ZIP found:"
+          echo "$ZIP"
+
+      # ==========================================
+      # EXTRACT SOURCE
+      # ==========================================
       - name: Extract source
         shell: bash
         run: |
@@ -50,25 +52,27 @@ jobs:
 
           unzip -q "$SOURCE_ZIP" -d source
 
-          echo "Source extracted."
+          echo "Source extracted successfully."
 
-          find source -maxdepth 3 \
+          find source -type f \
             \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) \
             -print
 
-      # ---------------------------------------------------------
-      # 4. FIND AND SET ANDROID PROJECT
-      # ---------------------------------------------------------
+      # ==========================================
+      # FIND GRADLE PROJECT
+      # ==========================================
       - name: Check Gradle project
         shell: bash
         run: |
           set -euo pipefail
 
-          PROJECT_DIR="$(find "$GITHUB_WORKSPACE/source" \
-            -type f \
-            \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) \
-            -print -quit \
-            | xargs -r dirname)"
+          PROJECT_DIR="$(
+            find "$GITHUB_WORKSPACE/source" \
+              -type f \
+              \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) \
+              -print -quit \
+              | xargs -r dirname
+          )"
 
           if [ -z "$PROJECT_DIR" ]; then
             echo "ERROR: Gradle project not found."
@@ -80,45 +84,49 @@ jobs:
           echo "Gradle project:"
           echo "$PROJECT_DIR"
 
-          echo "Project files:"
+          echo "Project contents:"
           ls -la "$PROJECT_DIR"
 
-      # ---------------------------------------------------------
-      # 5. JAVA 17
-      # ---------------------------------------------------------
+      # ==========================================
+      # JAVA 17
+      # ==========================================
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # ---------------------------------------------------------
-      # 6. GRADLE 8.9
-      # ---------------------------------------------------------
+      # ==========================================
+      # GRADLE 8.9
+      # ==========================================
       - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      # ---------------------------------------------------------
-      # 7. BUILD RELEASE APK
-      # ---------------------------------------------------------
+      # ==========================================
+      # BUILD RELEASE APK
+      # ==========================================
       - name: Build release APK
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
 
-          echo "Building EANUXX release APK..."
+          echo "=========================================="
+          echo "BUILDING EANUXX RELEASE APK"
+          echo "=========================================="
 
           gradle --no-daemon clean assembleRelease
 
-          echo "Build completed."
+          echo "Gradle build completed."
 
-          APK="$(find . \
-            -type f \
-            -path '*/build/outputs/apk/release/*.apk' \
-            -print -quit)"
+          APK="$(
+            find . \
+              -type f \
+              -path '*/build/outputs/apk/release/*.apk' \
+              -print -quit
+          )"
 
           if [ -z "$APK" ]; then
             echo "ERROR: Release APK was not created."
@@ -127,12 +135,12 @@ jobs:
 
           cp "$APK" "$GITHUB_WORKSPACE/EANUXX-release-unsigned.apk"
 
-          echo "Unsigned APK:"
+          echo "Unsigned APK created:"
           ls -lh "$GITHUB_WORKSPACE/EANUXX-release-unsigned.apk"
 
-      # ---------------------------------------------------------
-      # 8. LOCATE ANDROID BUILD TOOLS
-      # ---------------------------------------------------------
+      # ==========================================
+      # LOCATE ANDROID BUILD TOOLS
+      # ==========================================
       - name: Locate Android build tools
         shell: bash
         run: |
@@ -157,18 +165,28 @@ jobs:
 
           echo "BUILD_TOOLS=$BUILD_TOOLS" >> "$GITHUB_ENV"
 
-          echo "Using Android Build Tools: $BUILD_TOOLS_VERSION"
+          echo "Using Android Build Tools:"
+          echo "$BUILD_TOOLS_VERSION"
 
-          "$BUILD_TOOLS/zipalign" -version
+          echo "Checking zipalign..."
+          "$BUILD_TOOLS/zipalign" -h >/dev/null
+
+          echo "Checking apksigner..."
           "$BUILD_TOOLS/apksigner" --version
 
-      # ---------------------------------------------------------
-      # 9. ALIGN APK
-      # ---------------------------------------------------------
+          echo "Android build tools located successfully."
+
+      # ==========================================
+      # ALIGN APK
+      # ==========================================
       - name: Align APK
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "=========================================="
+          echo "ALIGNING APK"
+          echo "=========================================="
 
           "$BUILD_TOOLS/zipalign" \
             -f \
@@ -187,13 +205,17 @@ jobs:
 
           echo "zipalign verification successful."
 
-      # ---------------------------------------------------------
-      # 10. VERIFY resources.arsc
-      # ---------------------------------------------------------
+      # ==========================================
+      # VERIFY resources.arsc
+      # ==========================================
       - name: Verify resources.arsc
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "=========================================="
+          echo "VERIFYING resources.arsc"
+          echo "=========================================="
 
           python3 - <<'PY'
           import zipfile
@@ -213,9 +235,9 @@ jobs:
 
           echo "resources.arsc verification successful."
 
-      # ---------------------------------------------------------
-      # 11. RESTORE ORIGINAL EANUXX CERTIFICATE
-      # ---------------------------------------------------------
+      # ==========================================
+      # RESTORE SIGNING CERTIFICATE
+      # ==========================================
       - name: Restore signing certificate
         shell: bash
         env:
@@ -223,26 +245,36 @@ jobs:
         run: |
           set -euo pipefail
 
+          echo "=========================================="
+          echo "RESTORING EANUXX SIGNING CERTIFICATE"
+          echo "=========================================="
+
           if [ -z "$KEYSTORE_BASE64" ]; then
             echo "ERROR: EANUXX_KEYSTORE_BASE64 secret is missing."
             exit 1
           fi
 
-          echo "$KEYSTORE_BASE64" | base64 --decode > EANUXX-release.p12
+          echo "$KEYSTORE_BASE64" \
+            | base64 --decode \
+            > EANUXX-release.p12
 
           chmod 600 EANUXX-release.p12
 
           echo "Signing certificate restored."
 
-      # ---------------------------------------------------------
-      # 12. VERIFY CERTIFICATE BEFORE SIGNING
-      # ---------------------------------------------------------
+      # ==========================================
+      # VERIFY SIGNING CERTIFICATE
+      # ==========================================
       - name: Verify signing certificate
         shell: bash
         env:
           KEYSTORE_PASSWORD: ${{ secrets.EANUXX_KEYSTORE_PASSWORD }}
         run: |
           set -euo pipefail
+
+          echo "=========================================="
+          echo "VERIFYING SIGNING CERTIFICATE"
+          echo "=========================================="
 
           keytool \
             -list \
@@ -254,15 +286,19 @@ jobs:
 
           echo "Signing certificate verified."
 
-      # ---------------------------------------------------------
-      # 13. SIGN APK
-      # ---------------------------------------------------------
+      # ==========================================
+      # SIGN APK
+      # ==========================================
       - name: Sign APK
         shell: bash
         env:
           KEYSTORE_PASSWORD: ${{ secrets.EANUXX_KEYSTORE_PASSWORD }}
         run: |
           set -euo pipefail
+
+          echo "=========================================="
+          echo "SIGNING EANUXX APK"
+          echo "=========================================="
 
           "$BUILD_TOOLS/apksigner" sign \
             --ks EANUXX-release.p12 \
@@ -279,23 +315,24 @@ jobs:
 
           ls -lh EANUXX-release.apk
 
-      # ---------------------------------------------------------
-      # 14. VERIFY FINAL APK
-      # ---------------------------------------------------------
+      # ==========================================
+      # VERIFY FINAL APK
+      # ==========================================
       - name: Verify final APK
         shell: bash
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.EANUXX_KEYSTORE_PASSWORD }}
         run: |
           set -euo pipefail
 
           APK="EANUXX-release.apk"
 
-          echo "========================================"
+          echo "=========================================="
           echo "VERIFYING FINAL EANUXX APK"
-          echo "========================================"
+          echo "=========================================="
 
-          # APK signature verification
+          # --------------------------------------
+          # APK SIGNATURE
+          # --------------------------------------
+
           VERIFY_OUTPUT="$(
             "$BUILD_TOOLS/apksigner" verify \
               --verbose \
@@ -306,55 +343,58 @@ jobs:
           echo "$VERIFY_OUTPUT"
 
           echo "$VERIFY_OUTPUT" \
-            | grep -F "Verified using v2 scheme (APK Signature Scheme v2): true"
+            | grep -F \
+            "Verified using v2 scheme (APK Signature Scheme v2): true"
 
           echo "$VERIFY_OUTPUT" \
-            | grep -F "Verified using v3 scheme (APK Signature Scheme v3): true"
+            | grep -F \
+            "Verified using v3 scheme (APK Signature Scheme v3): true"
 
-          echo "V2 and V3 signatures confirmed."
+          echo "V2 signature confirmed."
+          echo "V3 signature confirmed."
 
-          # -----------------------------------------------------
-          # PACKAGE NAME
-          # -----------------------------------------------------
+          # --------------------------------------
+          # ANDROID PACKAGE / VERSION
+          # --------------------------------------
 
-          echo "========================================"
-          echo "VERIFYING PACKAGE"
-          echo "========================================"
+          echo "=========================================="
+          echo "VERIFYING PACKAGE AND VERSION"
+          echo "=========================================="
 
           BADGING="$(
-            "$ANDROID_HOME/build-tools/$(
-              basename "$BUILD_TOOLS"
-            )/aapt" dump badging "$APK"
+            "$BUILD_TOOLS/aapt" dump badging "$APK"
           )"
 
-          echo "$BADGING" | grep -F \
+          echo "$BADGING"
+
+          echo "$BADGING" \
+            | grep -F \
             "package: name='com.wEANUXX_20148007'"
 
-          echo "Package name confirmed."
-
-          # -----------------------------------------------------
-          # VERSION
-          # -----------------------------------------------------
-
-          echo "========================================"
-          echo "VERIFYING VERSION"
-          echo "========================================"
-
-          echo "$BADGING" | grep -F \
+          echo "$BADGING" \
+            | grep -F \
             "versionCode='3'"
 
-          echo "$BADGING" | grep -F \
+          echo "$BADGING" \
+            | grep -F \
             "versionName='0.3.0-functional-update'"
 
-          echo "Version confirmed."
+          echo "Package confirmed:"
+          echo "com.wEANUXX_20148007"
 
-          # -----------------------------------------------------
-          # CERTIFICATE FINGERPRINT
-          # -----------------------------------------------------
+          echo "Version Code confirmed:"
+          echo "3"
 
-          echo "========================================"
-          echo "VERIFYING CERTIFICATE"
-          echo "========================================"
+          echo "Version Name confirmed:"
+          echo "0.3.0-functional-update"
+
+          # --------------------------------------
+          # CERTIFICATE
+          # --------------------------------------
+
+          echo "=========================================="
+          echo "VERIFYING EANUXX CERTIFICATE"
+          echo "=========================================="
 
           EXPECTED_CERT="953F444B65594F10FCC456A7F5443FDB9554AF46F9A5FB72BF249291C848C7E0"
 
@@ -364,35 +404,35 @@ jobs:
               | tr -d ':'
           )"
 
-          echo "Expected certificate:"
+          echo "Expected certificate fingerprint:"
           echo "$EXPECTED_CERT"
 
-          echo "Checking APK certificate..."
+          echo "Checking final APK certificate..."
 
           echo "$NORMALIZED_OUTPUT" \
             | grep -F "$EXPECTED_CERT"
 
           echo "Correct EANUXX certificate confirmed."
 
-          # -----------------------------------------------------
+          # --------------------------------------
           # ZIP INTEGRITY
-          # -----------------------------------------------------
+          # --------------------------------------
 
-          echo "========================================"
-          echo "VERIFYING ZIP INTEGRITY"
-          echo "========================================"
+          echo "=========================================="
+          echo "VERIFYING APK ZIP INTEGRITY"
+          echo "=========================================="
 
           unzip -t "$APK"
 
           echo "ZIP integrity confirmed."
 
-          # -----------------------------------------------------
+          # --------------------------------------
           # FINAL SUCCESS
-          # -----------------------------------------------------
+          # --------------------------------------
 
-          echo "========================================"
+          echo "=========================================="
           echo "EANUXX APK VERIFICATION SUCCESSFUL"
-          echo "========================================"
+          echo "=========================================="
 
           echo "Package: com.wEANUXX_20148007"
           echo "Version Code: 3"
@@ -401,11 +441,14 @@ jobs:
           echo "V3 Signature: VERIFIED"
           echo "Certificate: VERIFIED"
           echo "ZIP Integrity: VERIFIED"
-          echo "========================================"
 
-      # ---------------------------------------------------------
-      # 15. UPLOAD APK
-      # ---------------------------------------------------------
+          echo "=========================================="
+          echo "READY FOR APK DOWNLOAD"
+          echo "=========================================="
+
+      # ==========================================
+      # UPLOAD APK
+      # ==========================================
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
@@ -414,9 +457,9 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # ---------------------------------------------------------
-      # 16. REMOVE SIGNING MATERIAL
-      # ---------------------------------------------------------
+      # ==========================================
+      # REMOVE SIGNING MATERIAL
+      # ==========================================
       - name: Remove signing material
         if: always()
         shell: bash
