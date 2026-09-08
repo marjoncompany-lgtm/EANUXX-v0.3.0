@@ -240,7 +240,14 @@ jobs:
           set -euo pipefail
           [ -n "${KEYSTORE_PASSWORD:-}" ]
           keytool -list -v -storetype PKCS12 -keystore EANUXX-release.p12 -storepass "$KEYSTORE_PASSWORD" > certificate.txt
-          actual="$(python3 - <<'PY' import re text = open('certificate.txt', encoding='utf-8', errors='replace').read() m = re.search(r'SHA256:\s*([0-9A-Fa-f:]{95})', text) if not m: raise SystemExit('ERROR: SHA-256 certificate fingerprint not found') print(m.group(1).replace(':', '').upper()) PY )"
+          actual="$(awk -F': ' 'tolower($1) == "sha256" { gsub(":", "", $2); print toupper($2); exit }' certificate.txt)"
+          if [ -z "$actual" ]; then
+            echo 'ERROR: SHA-256 certificate fingerprint not found.'
+            grep -i 'sha256' certificate.txt || true
+            exit 1
+          fi
+          echo "Keystore certificate SHA-256: $actual"
+          echo "Expected certificate SHA-256: $EXPECTED_CERT_SHA256"
           [ "$actual" = "$EXPECTED_CERT_SHA256" ]
 
       - name: Sign APK
@@ -260,7 +267,12 @@ jobs:
           grep -q 'Verified using v1 scheme (JAR signing): true' signature.txt
           grep -q 'Verified using v2 scheme (APK Signature Scheme v2): true' signature.txt
           grep -q 'Verified using v3 scheme (APK Signature Scheme v3): true' signature.txt
-          actual="$(python3 - <<'PY' import re text = open('signature.txt', encoding='utf-8', errors='replace').read() m = re.search(r'certificate SHA-256 digest:\s*([0-9A-Fa-f:]{95})', text, re.I) if not m: raise SystemExit('ERROR: APK certificate SHA-256 digest not found') print(m.group(1).replace(':', '').upper()) PY )"
+          actual="$(awk -F': ' 'tolower($1) ~ /certificate sha-256 digest/ { gsub(":", "", $2); print toupper($2); exit }' signature.txt)"
+          if [ -z "$actual" ]; then
+            echo 'ERROR: APK certificate SHA-256 digest not found.'
+            grep -i 'certificate sha-256' signature.txt || true
+            exit 1
+          fi
           echo "Expected certificate: $EXPECTED_CERT_SHA256"
           echo "APK certificate: $actual"
           [ "$actual" = "$EXPECTED_CERT_SHA256" ]
