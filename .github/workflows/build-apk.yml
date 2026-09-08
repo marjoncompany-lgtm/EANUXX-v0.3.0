@@ -36,7 +36,6 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Locate exactly one source ZIP
-        id: source
         shell: bash
         run: |
           set -euo pipefail
@@ -219,11 +218,15 @@ jobs:
           fi
 
           CERT_DER="$RUNNER_TEMP/eanuxx-certificate.der"
-
-          keytool -exportcert             -alias eanuxx             -storetype PKCS12             -keystore EANUXX-release.p12             -storepass "$KEYSTORE_PASSWORD"             -file "$CERT_DER"             -noprompt
+          keytool -exportcert \
+            -alias eanuxx \
+            -storetype PKCS12 \
+            -keystore EANUXX-release.p12 \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -file "$CERT_DER" \
+            -noprompt
 
           actual="$(sha256sum "$CERT_DER" | cut -d' ' -f1 | tr '[:lower:]' '[:upper:]')"
-
           echo "Keystore certificate SHA-256: $actual"
           echo "Expected certificate SHA-256: $EXPECTED_CERT_SHA256"
 
@@ -231,7 +234,6 @@ jobs:
             echo "ERROR: Signing certificate does not match the existing EANUXX release certificate."
             exit 1
           fi
-
           echo "Signing certificate verified successfully."
 
       - name: Sign APK
@@ -241,7 +243,17 @@ jobs:
         run: |
           set -euo pipefail
           FINAL_APK="$GITHUB_WORKSPACE/output/EANUXX_Livestreaming_Studio_v0.6.0.apk"
-          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner" sign             --ks EANUXX-release.p12             --ks-type PKCS12             --ks-key-alias eanuxx             --ks-pass "pass:$KEYSTORE_PASSWORD"             --v1-signing-enabled true             --v2-signing-enabled true             --v3-signing-enabled true             --v4-signing-enabled false             --out "$FINAL_APK"             "$ALIGNED_APK"
+          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner" sign \
+            --ks EANUXX-release.p12 \
+            --ks-type PKCS12 \
+            --ks-key-alias eanuxx \
+            --ks-pass "pass:$KEYSTORE_PASSWORD" \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --v4-signing-enabled false \
+            --out "$FINAL_APK" \
+            "$ALIGNED_APK"
           printf 'FINAL_APK=%s\n' "$FINAL_APK" >> "$GITHUB_ENV"
 
       - name: Verify final APK
@@ -256,12 +268,36 @@ jobs:
           set -euo pipefail
 
           CERT_OUTPUT="$RUNNER_TEMP/apksigner-cert.txt"
+          CERT_HEX="$RUNNER_TEMP/apksigner-cert-hex.txt"
 
-          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner"             verify             --print-certs             "$FINAL_APK" > "$CERT_OUTPUT" 2>&1
-
+          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner" verify --print-certs "$FINAL_APK" > "$CERT_OUTPUT" 2>&1
           cat "$CERT_OUTPUT"
 
-          cert="$( python3 - "$CERT_OUTPUT" <<'PY' import re import sys text = open( sys.argv[1], "r", encoding="utf-8", errors="replace" ).read() match = re.search( r"SHA-256\s+digest:\s*(.*?)(?:\s+Signer\s+#1\s+certificate\s+SHA-1|\s+SHA-1\s+digest:)", text, re.IGNORECASE | re.DOTALL ) if not match: raise SystemExit( "ERROR: SHA-256 certificate digest section not found." ) value = re.sub(r"[^0-9A-Fa-f]", "", match.group(1)) if len(value) != 64: raise SystemExit( f"ERROR: expected 64 SHA-256 hex characters, found {len(value)}." ) print(value.upper()) PY )"
+          # Do not use a heredoc inside command substitution here.
+          # apksigner may wrap the 64-character digest across visual lines.
+          awk '
+            /SHA-256 digest:/ {
+              found=1
+              sub(/^.*SHA-256 digest:[[:space:]]*/, "")
+              printf "%s", $0
+              next
+            }
+            found && /SHA-1 digest:/ {
+              found=0
+              next
+            }
+            found {
+              printf "%s", $0
+            }
+          ' "$CERT_OUTPUT" | tr -cd '0-9A-Fa-f' | head -c 64 | tr '[:lower:]' '[:upper:]' > "$CERT_HEX"
+
+          cert="$(cat "$CERT_HEX")"
+
+          if [ "${#cert}" -ne 64 ]; then
+            echo "ERROR: final APK certificate fingerprint could not be extracted."
+            echo "Extracted: $cert"
+            exit 1
+          fi
 
           echo "APK certificate SHA-256: $cert"
           echo "Expected certificate SHA-256: $EXPECTED_CERT_SHA256"
