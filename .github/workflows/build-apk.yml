@@ -240,10 +240,10 @@ jobs:
           set -euo pipefail
           [ -n "${KEYSTORE_PASSWORD:-}" ]
           keytool -list -v -storetype PKCS12 -keystore EANUXX-release.p12 -storepass "$KEYSTORE_PASSWORD" > certificate.txt
-          actual="$(awk -F': ' 'tolower($1) == "sha256" { gsub(":", "", $2); print toupper($2); exit }' certificate.txt)"
+          actual="$(awk ' BEGIN { found=0 } /^[[:space:]]*SHA256:/ { found=1 value=$0 sub(/^[[:space:]]*SHA256:[[:space:]]*/, "", value) gsub(/[[:space:]]/, "", value) if (value != "") { gsub(":", "", value) print toupper(value) exit } next } found { value=$0 gsub(/[[:space:]]/, "", value) if (value ~ /^([0-9A-Fa-f][0-9A-Fa-f]:){31}[0-9A-Fa-f][0-9A-Fa-f}$/) { gsub(":", "", value) print toupper(value) exit } } ' certificate.txt)"
           if [ -z "$actual" ]; then
             echo 'ERROR: SHA-256 certificate fingerprint not found.'
-            grep -i 'sha256' certificate.txt || true
+            grep -A1 -i 'SHA256:' certificate.txt || true
             exit 1
           fi
           echo "Keystore certificate SHA-256: $actual"
