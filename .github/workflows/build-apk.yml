@@ -35,30 +35,54 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Locate exactly one source ZIP
+      - name: Locate source ZIP by expected SHA-256
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -d '' -t zips < <(find . -maxdepth 1 -type f -name '*.zip' -print0 | sort -z)
-          if [ "${#zips[@]}" -ne 1 ]; then
-            echo "ERROR: expected exactly one root source ZIP; found ${#zips[@]}."
-            printf '%s\n' "${zips[@]}" | sed 's#^\./##'
+
+          # Do NOT require exactly one ZIP. Other ZIPs (for example a
+          # workflow-delivery package) may exist in the repository.
+          # Select the application source ZIP by its cryptographic SHA-256.
+          matches=()
+
+          while IFS= read -r -d '' candidate; do
+            candidate_sha="$(sha256sum "$candidate" | awk '{print $1}')"
+            echo "$candidate_sha  ${candidate#./}"
+            if [ "$candidate_sha" = "$EXPECTED_SOURCE_SHA256" ]; then
+              matches+=("${candidate#./}")
+            fi
+          done < <(find . -maxdepth 1 -type f -name '*.zip' -print0 | sort -z)
+
+          if [ "${#matches[@]}" -ne 1 ]; then
+            echo "ERROR: expected exactly one root ZIP matching EXPECTED_SOURCE_SHA256."
+            echo "Expected: $EXPECTED_SOURCE_SHA256"
+            echo "Matching ZIPs found: ${#matches[@]}"
+            printf '%s\n' "${matches[@]:-<none>}"
+            echo "All root ZIP SHA-256 values:"
+            find . -maxdepth 1 -type f -name '*.zip' -print0 |
+              while IFS= read -r -d '' f; do
+                sha256sum "$f"
+              done
             exit 1
           fi
-          SOURCE_ZIP="${zips[0]#./}"
-          printf 'SOURCE_ZIP=%s\n' "$SOURCE_ZIP" >> "$GITHUB_ENV"
-          echo "Found source ZIP: $SOURCE_ZIP"
-          test -f "$SOURCE_ZIP"
 
+          SOURCE_ZIP="${matches[0]}"
+          printf 'SOURCE_ZIP=%s\n' "$SOURCE_ZIP" >> "$GITHUB_ENV"
+          echo "Selected application source ZIP: $SOURCE_ZIP"
       - name: Verify source ZIP
         shell: bash
         run: |
           set -euo pipefail
           test -f "$SOURCE_ZIP"
           actual="$(sha256sum "$SOURCE_ZIP" | awk '{print $1}')"
+          echo "Source ZIP: $SOURCE_ZIP"
           echo "Source SHA-256: $actual"
           echo "Expected SHA-256: $EXPECTED_SOURCE_SHA256"
-          [ "$actual" = "$EXPECTED_SOURCE_SHA256" ]
+          if [ "$actual" != "$EXPECTED_SOURCE_SHA256" ]; then
+            echo "ERROR: selected ZIP is not the expected EANUXX v0.6.0 source."
+            exit 1
+          fi
+          echo "Source ZIP verified successfully."
 
       - name: Extract source
         shell: bash
@@ -268,30 +292,37 @@ jobs:
           set -euo pipefail
 
           CERT_OUTPUT="$RUNNER_TEMP/apksigner-cert.txt"
-          CERT_HEX="$RUNNER_TEMP/apksigner-cert-hex.txt"
 
-          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner" verify --print-certs "$FINAL_APK" > "$CERT_OUTPUT" 2>&1
+          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner" \
+            verify --print-certs "$FINAL_APK" > "$CERT_OUTPUT" 2>&1
+
           cat "$CERT_OUTPUT"
 
-          # Do not use a heredoc inside command substitution here.
-          # apksigner may wrap the 64-character digest across visual lines.
-          awk '
-            /SHA-256 digest:/ {
-              found=1
-              sub(/^.*SHA-256 digest:[[:space:]]*/, "")
-              printf "%s", $0
-              next
-            }
-            found && /SHA-1 digest:/ {
-              found=0
-              next
-            }
-            found {
-              printf "%s", $0
-            }
-          ' "$CERT_OUTPUT" | tr -cd '0-9A-Fa-f' | head -c 64 | tr '[:lower:]' '[:upper:]' > "$CERT_HEX"
-
-          cert="$(cat "$CERT_HEX")"
+          # apksigner can visually wrap the 64-hex-character SHA-256 digest.
+          # Join only the SHA-256 section, remove whitespace/colons, and then
+          # require exactly 64 hexadecimal characters.
+          cert="$(
+            awk '
+              /Signer #1 certificate SHA-256 digest:/ {
+                capture=1
+                sub(/^.*Signer #1 certificate SHA-256 digest:[[:space:]]*/, "")
+                gsub(/[[:space:]:]/, "")
+                value=$0
+                next
+              }
+              capture && /Signer #1 certificate SHA-1 digest:/ {
+                capture=0
+              }
+              capture {
+                gsub(/[[:space:]:]/, "")
+                value=value $0
+              }
+              END { print value }
+            ' "$CERT_OUTPUT" |
+            grep -oE '[0-9A-Fa-f]{64}' |
+            head -n1 |
+            tr '[:lower:]' '[:upper:]'
+          )"
 
           if [ "${#cert}" -ne 64 ]; then
             echo "ERROR: final APK certificate fingerprint could not be extracted."
@@ -341,4 +372,4 @@ jobs:
         if: always()
         shell: bash
         run: |
-          rm -f EANUXX-release.p12 certificate.txt
+          rm -f EANUXX-release.p12 "$RUNNER_TEMP/eanuxx-certificate.der" "$RUNNER_TEMP/apksigner-cert.txt"
