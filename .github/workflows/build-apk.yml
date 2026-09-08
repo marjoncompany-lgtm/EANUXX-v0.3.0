@@ -220,13 +220,7 @@ jobs:
 
           CERT_DER="$RUNNER_TEMP/eanuxx-certificate.der"
 
-          keytool -exportcert \
-            -alias eanuxx \
-            -storetype PKCS12 \
-            -keystore EANUXX-release.p12 \
-            -storepass "$KEYSTORE_PASSWORD" \
-            -file "$CERT_DER" \
-            -noprompt
+          keytool -exportcert             -alias eanuxx             -storetype PKCS12             -keystore EANUXX-release.p12             -storepass "$KEYSTORE_PASSWORD"             -file "$CERT_DER"             -noprompt
 
           actual="$(sha256sum "$CERT_DER" | cut -d' ' -f1 | tr '[:lower:]' '[:upper:]')"
 
@@ -247,17 +241,7 @@ jobs:
         run: |
           set -euo pipefail
           FINAL_APK="$GITHUB_WORKSPACE/output/EANUXX_Livestreaming_Studio_v0.6.0.apk"
-          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner" sign \
-            --ks EANUXX-release.p12 \
-            --ks-type PKCS12 \
-            --ks-key-alias eanuxx \
-            --ks-pass "pass:$KEYSTORE_PASSWORD" \
-            --v1-signing-enabled true \
-            --v2-signing-enabled true \
-            --v3-signing-enabled true \
-            --v4-signing-enabled false \
-            --out "$FINAL_APK" \
-            "$ALIGNED_APK"
+          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner" sign             --ks EANUXX-release.p12             --ks-type PKCS12             --ks-key-alias eanuxx             --ks-pass "pass:$KEYSTORE_PASSWORD"             --v1-signing-enabled true             --v2-signing-enabled true             --v3-signing-enabled true             --v4-signing-enabled false             --out "$FINAL_APK"             "$ALIGNED_APK"
           printf 'FINAL_APK=%s\n' "$FINAL_APK" >> "$GITHUB_ENV"
 
       - name: Verify final APK
@@ -273,20 +257,11 @@ jobs:
 
           CERT_OUTPUT="$RUNNER_TEMP/apksigner-cert.txt"
 
-          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner" \
-            verify \
-            --print-certs \
-            "$FINAL_APK" > "$CERT_OUTPUT" 2>&1
+          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner"             verify             --print-certs             "$FINAL_APK" > "$CERT_OUTPUT" 2>&1
 
           cat "$CERT_OUTPUT"
 
-          cert_colon="$(grep -Eo '[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){31}' "$CERT_OUTPUT" | head -n1 || true)"
-          cert="$(printf '%s' "$cert_colon" | tr -d ':' | tr '[:lower:]' '[:upper:]')"
-
-          if [ "${#cert}" -ne 64 ]; then
-            echo "ERROR: final APK certificate fingerprint could not be extracted."
-            exit 1
-          fi
+          cert="$( python3 - "$CERT_OUTPUT" <<'PY' import re import sys text = open( sys.argv[1], "r", encoding="utf-8", errors="replace" ).read() match = re.search( r"SHA-256\s+digest:\s*(.*?)(?:\s+Signer\s+#1\s+certificate\s+SHA-1|\s+SHA-1\s+digest:)", text, re.IGNORECASE | re.DOTALL ) if not match: raise SystemExit( "ERROR: SHA-256 certificate digest section not found." ) value = re.sub(r"[^0-9A-Fa-f]", "", match.group(1)) if len(value) != 64: raise SystemExit( f"ERROR: expected 64 SHA-256 hex characters, found {len(value)}." ) print(value.upper()) PY )"
 
           echo "APK certificate SHA-256: $cert"
           echo "Expected certificate SHA-256: $EXPECTED_CERT_SHA256"
