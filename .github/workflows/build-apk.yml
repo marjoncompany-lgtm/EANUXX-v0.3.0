@@ -218,11 +218,27 @@ jobs:
             exit 1
           fi
 
-          actual="$({ keytool -exportcert \ -alias eanuxx \ -storetype PKCS12 \ -keystore EANUXX-release.p12 \ -storepass "$KEYSTORE_PASSWORD" \ -noprompt } | sha256sum | awk '{print toupper($1)}')"
+          CERT_DER="$RUNNER_TEMP/eanuxx-certificate.der"
+
+          keytool -exportcert \
+            -alias eanuxx \
+            -storetype PKCS12 \
+            -keystore EANUXX-release.p12 \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -file "$CERT_DER" \
+            -noprompt
+
+          actual="$(sha256sum "$CERT_DER" | cut -d' ' -f1 | tr '[:lower:]' '[:upper:]')"
 
           echo "Keystore certificate SHA-256: $actual"
           echo "Expected certificate SHA-256: $EXPECTED_CERT_SHA256"
-          [ "$actual" = "$EXPECTED_CERT_SHA256" ]
+
+          if [ "$actual" != "$EXPECTED_CERT_SHA256" ]; then
+            echo "ERROR: Signing certificate does not match the existing EANUXX release certificate."
+            exit 1
+          fi
+
+          echo "Signing certificate verified successfully."
 
       - name: Sign APK
         shell: bash
@@ -254,16 +270,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          output="$($ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner verify --print-certs "$FINAL_APK" 2>&1)"
-          echo "$output"
-          cert="$(printf '%s\n' "$output" | grep -i 'certificate SHA-256 digest:' | head -n1 | sed -E 's/.*certificate SHA-256 digest:[[:space:]]*//' | tr -cd '0-9A-Fa-f' | tr '[:lower:]' '[:upper:]')"
+
+          CERT_OUTPUT="$RUNNER_TEMP/apksigner-cert.txt"
+
+          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner" \
+            verify \
+            --print-certs \
+            "$FINAL_APK" > "$CERT_OUTPUT" 2>&1
+
+          cat "$CERT_OUTPUT"
+
+          cert_colon="$(grep -Eo '[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){31}' "$CERT_OUTPUT" | head -n1 || true)"
+          cert="$(printf '%s' "$cert_colon" | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+
           if [ "${#cert}" -ne 64 ]; then
             echo "ERROR: final APK certificate fingerprint could not be extracted."
             exit 1
           fi
+
           echo "APK certificate SHA-256: $cert"
           echo "Expected certificate SHA-256: $EXPECTED_CERT_SHA256"
-          [ "$cert" = "$EXPECTED_CERT_SHA256" ]
+
+          if [ "$cert" != "$EXPECTED_CERT_SHA256" ]; then
+            echo "ERROR: final APK certificate does not match expected certificate."
+            exit 1
+          fi
+
+          echo "Final APK certificate verified successfully."
 
       - name: Verify final APK integrity and metadata
         shell: bash
