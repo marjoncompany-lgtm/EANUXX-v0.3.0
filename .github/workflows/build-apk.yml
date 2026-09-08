@@ -40,20 +40,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t zips < <(find . -maxdepth 1 -type f -name '*.zip' -printf '%f\n' | sort)
+          mapfile -d '' -t zips < <(find . -maxdepth 1 -type f -name '*.zip' -print0 | sort -z)
           if [ "${#zips[@]}" -ne 1 ]; then
-            echo "ERROR: expected exactly one root source ZIP."
-            printf '%s\n' "${zips[@]}"
+            echo "ERROR: expected exactly one root source ZIP; found ${#zips[@]}."
+            printf '%s\n' "${zips[@]}" | sed 's#^\./##'
             exit 1
           fi
-          echo "SOURCE_ZIP=${zips[0]}" >> "$GITHUB_ENV"
-          echo "Found: ${zips[0]}"
+          SOURCE_ZIP="${zips[0]#./}"
+          printf 'SOURCE_ZIP=%s\n' "$SOURCE_ZIP" >> "$GITHUB_ENV"
+          echo "Found source ZIP: $SOURCE_ZIP"
+          test -f "$SOURCE_ZIP"
 
       - name: Verify source ZIP
         shell: bash
         run: |
           set -euo pipefail
-          actual="$(sha256sum "$SOURCE_ZIP" | cut -d' ' -f1)"
+          test -f "$SOURCE_ZIP"
+          actual="$(sha256sum "$SOURCE_ZIP" | awk '{print $1}')"
           echo "Source SHA-256: $actual"
           echo "Expected SHA-256: $EXPECTED_SOURCE_SHA256"
           [ "$actual" = "$EXPECTED_SOURCE_SHA256" ]
@@ -65,18 +68,23 @@ jobs:
           rm -rf app-source
           mkdir -p app-source
           unzip -q "$SOURCE_ZIP" -d app-source
+
           if [ -f app-source/settings.gradle.kts ]; then
             PROJECT_DIR="app-source"
           elif [ -f app-source/app-source/settings.gradle.kts ]; then
             PROJECT_DIR="app-source/app-source"
           else
-            PROJECT_DIR="$(find app-source -maxdepth 4 -type f -name settings.gradle.kts -print -quit | xargs -r dirname)"
+            mapfile -t projects < <(find app-source -maxdepth 4 -type f -name settings.gradle.kts -print | sort)
+            if [ "${#projects[@]}" -ne 1 ]; then
+              echo "ERROR: expected exactly one Gradle settings file; found ${#projects[@]}."
+              printf '%s\n' "${projects[@]}"
+              exit 1
+            fi
+            PROJECT_DIR="$(dirname "${projects[0]}")"
           fi
-          if [ -z "${PROJECT_DIR:-}" ] || [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
-            echo "ERROR: Gradle project was not found."
-            exit 1
-          fi
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          test -f "$PROJECT_DIR/settings.gradle.kts"
+          printf 'PROJECT_DIR=%s\n' "$PROJECT_DIR" >> "$GITHUB_ENV"
           echo "Project: $PROJECT_DIR"
 
       - name: Setup Java 17
@@ -102,8 +110,12 @@ jobs:
         run: |
           set -euo pipefail
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platforms;android-37.0" "build-tools;36.0.0"
+          test -d "$ANDROID_HOME/platforms/android-37.0"
+          test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          test -x "$ANDROID_HOME/build-tools/36.0.0/zipalign"
 
       - name: Validate Gradle project configuration
         working-directory: ${{ env.PROJECT_DIR }}
@@ -118,7 +130,7 @@ jobs:
           grep -q 'versionCode = 9' app/build.gradle.kts
           grep -q 'versionName = "0.6.0-professional-ui"' app/build.gradle.kts
           grep -q 'requireLensFacing' app/src/main/java/com/eanuxx/livestream/ui/screens/StudioScreen.kt
-          echo "Gradle and CameraX source checks passed."
+          echo "Gradle, Android 17, version, and CameraX source checks passed."
 
       - name: Build release APK
         working-directory: ${{ env.PROJECT_DIR }}
@@ -131,20 +143,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t apks < <(find "$PROJECT_DIR/app/build/outputs/apk/release" -type f -name '*.apk' -print | sort)
+          mapfile -d '' -t apks < <(find "$PROJECT_DIR/app/build/outputs/apk/release" -type f -name '*.apk' -print0 | sort -z)
           if [ "${#apks[@]}" -ne 1 ]; then
-            echo "ERROR: expected exactly one release APK."
-            printf '%s\\n' "${apks[@]}"
+            echo "ERROR: expected exactly one release APK; found ${#apks[@]}."
+            printf '%s\n' "${apks[@]}"
             exit 1
           fi
-          echo "UNSIGNED_APK=${apks[0]}" >> "$GITHUB_ENV"
-          echo "Release APK: ${apks[0]}"
+          UNSIGNED_APK="${apks[0]}"
+          printf 'UNSIGNED_APK=%s\n' "$UNSIGNED_APK" >> "$GITHUB_ENV"
+          echo "Release APK: $UNSIGNED_APK"
 
       - name: Verify unsigned APK metadata
         shell: bash
         run: |
           set -euo pipefail
           AAPT2="$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/aapt2"
+          test -x "$AAPT2"
           "$AAPT2" dump badging "$UNSIGNED_APK" | grep -q "package: name='$PACKAGE_NAME'"
           "$AAPT2" dump badging "$UNSIGNED_APK" | grep -q "versionCode='$VERSION_CODE'"
           "$AAPT2" dump badging "$UNSIGNED_APK" | grep -q "versionName='$VERSION_NAME'"
@@ -153,10 +167,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p output
+          mkdir -p "$GITHUB_WORKSPACE/output"
           ALIGNED_APK="$GITHUB_WORKSPACE/output/EANUXX-v0.6.0-aligned.apk"
           "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/zipalign" -f -P 16 4 "$UNSIGNED_APK" "$ALIGNED_APK"
-          echo "ALIGNED_APK=$ALIGNED_APK" >> "$GITHUB_ENV"
+          printf 'ALIGNED_APK=%s\n' "$ALIGNED_APK" >> "$GITHUB_ENV"
 
       - name: Verify alignment
         shell: bash
@@ -204,18 +218,7 @@ jobs:
             exit 1
           fi
 
-          keytool -list -v             -storetype PKCS12             -keystore EANUXX-release.p12             -storepass "$KEYSTORE_PASSWORD" > certificate.txt
-
-          # keytool may wrap the fingerprint visually. Join all output
-          # lines before extracting the value between SHA256: and
-          # Signature algorithm, so log wrapping cannot break parsing.
-          actual="$( tr '\\n' ' ' < certificate.txt | sed -E 's/.*SHA256:[[:space:]]*//' | sed -E 's/[[:space:]]+Signature algorithm.*//' | tr -cd '0-9A-Fa-f' | tr '[:lower:]' '[:upper:]' )"
-
-          if [ "${#actual}" -ne 64 ]; then
-            echo "ERROR: SHA-256 certificate fingerprint could not be extracted."
-            grep -A2 -i 'SHA256:' certificate.txt || true
-            exit 1
-          fi
+          actual="$({ keytool -exportcert \ -alias eanuxx \ -storetype PKCS12 \ -keystore EANUXX-release.p12 \ -storepass "$KEYSTORE_PASSWORD" \ -noprompt } | sha256sum | awk '{print toupper($1)}')"
 
           echo "Keystore certificate SHA-256: $actual"
           echo "Expected certificate SHA-256: $EXPECTED_CERT_SHA256"
@@ -228,8 +231,18 @@ jobs:
         run: |
           set -euo pipefail
           FINAL_APK="$GITHUB_WORKSPACE/output/EANUXX_Livestreaming_Studio_v0.6.0.apk"
-          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner" sign             --ks EANUXX-release.p12             --ks-type PKCS12             --ks-key-alias eanuxx             --ks-pass "pass:$KEYSTORE_PASSWORD"             --v1-signing-enabled true             --v2-signing-enabled true             --v3-signing-enabled true             --v4-signing-enabled false             --out "$FINAL_APK"             "$ALIGNED_APK"
-          echo "FINAL_APK=$FINAL_APK" >> "$GITHUB_ENV"
+          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner" sign \
+            --ks EANUXX-release.p12 \
+            --ks-type PKCS12 \
+            --ks-key-alias eanuxx \
+            --ks-pass "pass:$KEYSTORE_PASSWORD" \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --v4-signing-enabled false \
+            --out "$FINAL_APK" \
+            "$ALIGNED_APK"
+          printf 'FINAL_APK=%s\n' "$FINAL_APK" >> "$GITHUB_ENV"
 
       - name: Verify final APK
         shell: bash
@@ -241,7 +254,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cert="$( "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner" verify --print-certs "$FINAL_APK" 2>&1 | sed -n -E 's/.*certificate SHA-256 digest: ([0-9A-Fa-f]+).*/\1/p' | head -n1 | tr '[:lower:]' '[:upper:]' )"
+          output="$($ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner verify --print-certs "$FINAL_APK" 2>&1)"
+          echo "$output"
+          cert="$(printf '%s\n' "$output" | grep -i 'certificate SHA-256 digest:' | head -n1 | sed -E 's/.*certificate SHA-256 digest:[[:space:]]*//' | tr -cd '0-9A-Fa-f' | tr '[:lower:]' '[:upper:]')"
+          if [ "${#cert}" -ne 64 ]; then
+            echo "ERROR: final APK certificate fingerprint could not be extracted."
+            exit 1
+          fi
           echo "APK certificate SHA-256: $cert"
           echo "Expected certificate SHA-256: $EXPECTED_CERT_SHA256"
           [ "$cert" = "$EXPECTED_CERT_SHA256" ]
@@ -250,33 +269,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          unzip -t "$FINAL_APK" >/dev/null
           AAPT2="$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/aapt2"
           "$AAPT2" dump badging "$FINAL_APK" | grep -q "package: name='$PACKAGE_NAME'"
           "$AAPT2" dump badging "$FINAL_APK" | grep -q "versionCode='$VERSION_CODE'"
           "$AAPT2" dump badging "$FINAL_APK" | grep -q "versionName='$VERSION_NAME'"
           "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/zipalign" -c -P 16 -v 4 "$FINAL_APK"
-          unzip -tq "$FINAL_APK"
-          echo "Final APK integrity and metadata checks passed."
+          echo "Final APK integrity, metadata, signature, and 16 KB alignment verified."
 
       - name: Generate checksum
         shell: bash
         run: |
           set -euo pipefail
-          sha256sum "$FINAL_APK" | tee "$FINAL_APK.sha256"
+          sha256sum "$FINAL_APK" | tee "$GITHUB_WORKSPACE/output/EANUXX_Livestreaming_Studio_v0.6.0.apk.sha256"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: EANUXX-v0.6.0-professional-ui
+          name: EANUXX-v0.6.0-APK
           path: |
-            ${{ env.FINAL_APK }}
-            ${{ env.FINAL_APK }}.sha256
+            output/EANUXX_Livestreaming_Studio_v0.6.0.apk
+            output/EANUXX_Livestreaming_Studio_v0.6.0.apk.sha256
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 14
 
       - name: Cleanup signing material
         if: always()
         shell: bash
         run: |
-          set +e
           rm -f EANUXX-release.p12 certificate.txt
